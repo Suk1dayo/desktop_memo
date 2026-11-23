@@ -8,8 +8,8 @@ namespace DesktopMemo
 {
     public static class Program
     {
-        private const string MutexName = "Local\\DesktopMemo_Gyer_SingleInstance_v1";
-        private const string WakeupEventName = "Local\\DesktopMemo_Gyer_Wakeup_v1";
+        private const string MutexName = "Local\\DesktopMemo_SingleInstance_v1";
+        private const string WakeupEventName = "Local\\DesktopMemo_Wakeup_v1";
 
         [STAThread]
         public static int Main(string[] args)

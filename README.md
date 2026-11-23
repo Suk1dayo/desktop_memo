@@ -12,7 +12,7 @@
 
 ## 下载
 
-不想编译？直接取预构建版本：[**Releases → v2.0.0**](https://github.com/Suk1dayo/desktop_memo/releases/tag/v2.0.0)
+不想编译？直接取预构建版本：见本仓库右侧 **Releases** 页面的 `v2.0.0`。
 
 | 文件 | 说明 |
 | --- | --- |
