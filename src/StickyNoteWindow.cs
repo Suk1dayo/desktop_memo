@@ -13,7 +13,7 @@ namespace DesktopMemo
 {
     public class StickyNoteWindow : Window
     {
-        private readonly StickyNote _note;
+        private StickyNote _note;
         private readonly TrayAndAppController _controller;
 
         private bool _isInitializing = true;
@@ -92,6 +92,11 @@ namespace DesktopMemo
             return Win32Native.HandleDesktopAndResizeMessages(
                 this, hwnd, msg, wParam, lParam,
                 _note.PinMode, _note.Locked, false, _isAdjustingZ, ref handled);
+        }
+
+        public void RebindNote(StickyNote note)
+        {
+            if (note != null) _note = note;
         }
 
         public void ApplyPinModeNow()
@@ -377,6 +382,7 @@ namespace DesktopMemo
             _quickTaskBox.Text = "";
             _quickDdlBox.SelectedIndex = 0;
             _controller.AddTask(task);
+            _quickTaskBox.Focus();
         }
 
         private int ResolveDefaultQuadrant()
@@ -413,10 +419,16 @@ namespace DesktopMemo
             _headerBar.BorderBrush = pal.Border;
 
             _suppressTextSync = true;
-            _titleEditBox.Text = _note.Title ?? "";
+            if (!_titleEditBox.IsKeyboardFocused)
+            {
+                _titleEditBox.Text = _note.Title ?? "";
+            }
             _titleEditBox.Foreground = pal.TextPrimary;
             _titleEditBox.FontSize = scale.FontSize + 0.5;
-            _scratchpadBox.Text = _note.Content ?? "";
+            if (!_scratchpadBox.IsKeyboardFocused)
+            {
+                _scratchpadBox.Text = _note.Content ?? "";
+            }
             _scratchpadBox.Foreground = pal.TextPrimary;
             _scratchpadBox.FontSize = scale.FontSize;
             _scratchpadPlaceholder.FontSize = scale.SmallFontSize + 0.5;

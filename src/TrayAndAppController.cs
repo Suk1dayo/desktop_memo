@@ -30,6 +30,7 @@ namespace DesktopMemo
         private readonly DispatcherTimer _saveConfigTimer;
         private readonly DispatcherTimer _reloadWatcherTimer;
         private readonly DispatcherTimer _remoteSyncTimer;
+        private readonly DispatcherTimer _remotePushTimer;
         private readonly ReminderService _reminderService;
         private readonly Dictionary<string, StickyNoteWindow> _stickyWindows = new Dictionary<string, StickyNoteWindow>();
 
@@ -43,10 +44,15 @@ namespace DesktopMemo
         private MemoTask _lastDeletedTask;
         private int _lastDeletedIndex = -1;
         private UndoToastWindow _undoToast;
+        private long _localDataVersion = 0;
+        private long _pushedDataVersion = 0;
+        private bool _isRemoteSyncInFlight = false;
         private bool _allHiddenByUser = false;
 
         public bool CanUndoAiSort { get { return _lastAiSnapshot != null; } }
         public bool CanUndoDelete { get { return _lastDeletedTask != null; } }
+        public bool HasPendingRemotePush { get { return _localDataVersion > _pushedDataVersion; } }
+        public long LocalDataVersion { get { return _localDataVersion; } }
 
         public TrayAndAppController(StorageService storage)
         {
@@ -75,12 +81,24 @@ namespace DesktopMemo
                 ReloadDataFromDiskExternal();
             };
 
+            _remotePushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+            _remotePushTimer.Tick += async delegate
+            {
+                _remotePushTimer.Stop();
+                await AutoPushIfDirtyAsync();
+            };
+
             _remoteSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
             _remoteSyncTimer.Tick += async delegate
             {
-                if (Config.RemoteSyncEnabled && !string.IsNullOrWhiteSpace(Config.RemoteServerUrl))
+                if (!Config.RemoteSyncEnabled || string.IsNullOrWhiteSpace(Config.RemoteServerUrl) || _isRemoteSyncInFlight) return;
+                if (_localDataVersion > _pushedDataVersion)
                 {
-                    await PullFromRemoteServerAsync();
+                    await AutoPushIfDirtyAsync();
+                }
+                else
+                {
+                    await PullFromRemoteServerAsync(false);
                 }
             };
 
@@ -97,8 +115,22 @@ namespace DesktopMemo
 
         private void SaveDataMarkSelf()
         {
+            SaveDataMarkSelf(true);
+        }
+
+        private void SaveDataMarkSelf(bool isLocalMutation)
+        {
             _lastSelfWriteUtc = DateTime.UtcNow;
             Storage.SaveData(Data);
+            if (isLocalMutation)
+            {
+                _localDataVersion++;
+                if (Config.RemoteSyncEnabled && !string.IsNullOrWhiteSpace(Config.RemoteServerUrl))
+                {
+                    _remotePushTimer.Stop();
+                    _remotePushTimer.Start();
+                }
+            }
         }
 
         public void Start(bool startedFromAutoStart)
@@ -125,6 +157,7 @@ namespace DesktopMemo
             _saveDataTimer.Stop();
             _saveConfigTimer.Stop();
             _reloadWatcherTimer.Stop();
+            _remotePushTimer.Stop();
             _remoteSyncTimer.Stop();
             _reminderService.Stop();
 
@@ -135,7 +168,7 @@ namespace DesktopMemo
                 _dataWatcher = null;
             }
 
-            SaveDataMarkSelf();
+            SaveDataMarkSelf(false);
             Storage.SaveConfig(Config);
 
             UnregisterAllHotkeys();
@@ -372,6 +405,10 @@ namespace DesktopMemo
                     if (!shouldShow) continue;
                     win = new StickyNoteWindow(note, this);
                     _stickyWindows[note.Id] = win;
+                }
+                else
+                {
+                    win.RebindNote(note);
                 }
 
                 if (shouldShow)
@@ -876,11 +913,63 @@ namespace DesktopMemo
             }
         }
 
-        public async Task<string> PullFromRemoteServerAsync()
+        public static List<StickyNote> MergePulledStickyNotes(List<StickyNote> localNotes, List<StickyNote> pulledNotes)
+        {
+            if (pulledNotes == null) return new List<StickyNote>();
+            var localById = new Dictionary<string, StickyNote>();
+            if (localNotes != null)
+            {
+                for (int i = 0; i < localNotes.Count; i++)
+                {
+                    StickyNote ln = localNotes[i];
+                    if (ln != null && !string.IsNullOrEmpty(ln.Id) && !localById.ContainsKey(ln.Id))
+                    {
+                        localById[ln.Id] = ln;
+                    }
+                }
+            }
+
+            for (int i = 0; i < pulledNotes.Count; i++)
+            {
+                StickyNote remote = pulledNotes[i];
+                if (remote == null || string.IsNullOrEmpty(remote.Id)) continue;
+                StickyNote local;
+                if (localById.TryGetValue(remote.Id, out local))
+                {
+                    remote.Visible = local.Visible;
+                    remote.Left = local.Left;
+                    remote.Top = local.Top;
+                    remote.Width = local.Width;
+                    remote.Height = local.Height;
+                    remote.PinMode = local.PinMode;
+                    remote.Locked = local.Locked;
+                    remote.Collapsed = local.Collapsed;
+                    remote.Theme = local.Theme;
+                    remote.Opacity = local.Opacity;
+                    remote.GlassTransparency = local.GlassTransparency;
+                    remote.FontSize = local.FontSize;
+                }
+            }
+            return pulledNotes;
+        }
+
+        public Task<string> PullFromRemoteServerAsync()
+        {
+            return PullFromRemoteServerAsync(true);
+        }
+
+        public async Task<string> PullFromRemoteServerAsync(bool isManual)
         {
             string baseUrl = (Config.RemoteServerUrl ?? "").Trim().TrimEnd('/');
             if (string.IsNullOrEmpty(baseUrl)) return "⚠ 请先填写远程 Server 地址。";
+            if (!isManual && (_isRemoteSyncInFlight || _localDataVersion > _pushedDataVersion))
+            {
+                return "本地有待推送改动，已跳过拉取";
+            }
+            if (_isRemoteSyncInFlight) return "正在同步中，请稍候...";
 
+            long versionBeforePull = _localDataVersion;
+            _isRemoteSyncInFlight = true;
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) })
@@ -889,14 +978,30 @@ namespace DesktopMemo
                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     string stateBody = await client.GetStringAsync(baseUrl + "/api/state");
 
+                    if (!isManual && _localDataVersion != versionBeforePull)
+                    {
+                        if (Config.RemoteSyncEnabled && !string.IsNullOrWhiteSpace(Config.RemoteServerUrl))
+                        {
+                            _remotePushTimer.Stop();
+                            _remotePushTimer.Start();
+                        }
+                        return "本地已有新改动，已保留本地数据";
+                    }
+
                     var ser = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
                     AppData pulled = ser.Deserialize<AppData>(stateBody);
                     if (pulled != null && pulled.Tasks != null)
                     {
-                        if (pulled.StickyNotes == null) pulled.StickyNotes = Data.StickyNotes;
                         Data.Tasks = pulled.Tasks;
-                        if (pulled.StickyNotes.Count > 0) Data.StickyNotes = pulled.StickyNotes;
-                        SaveDataMarkSelf();
+                        if (pulled.StickyNotes != null && pulled.StickyNotes.Count > 0)
+                        {
+                            Data.StickyNotes = MergePulledStickyNotes(Data.StickyNotes, pulled.StickyNotes);
+                        }
+                        SaveDataMarkSelf(false);
+                        if (isManual)
+                        {
+                            _pushedDataVersion = _localDataVersion;
+                        }
                         ApplyDisplayModeVisibility();
                         RefreshAllViews();
                         return string.Format("✓ 已从服务器同步 {0} 条任务 ({1})", Data.Tasks.Count, DateTime.Now.ToString("HH:mm:ss"));
@@ -908,13 +1013,20 @@ namespace DesktopMemo
             {
                 return "⚠ 同步失败：" + ex.Message;
             }
+            finally
+            {
+                _isRemoteSyncInFlight = false;
+            }
         }
 
         public async Task<string> PushToRemoteServerAsync()
         {
             string baseUrl = (Config.RemoteServerUrl ?? "").Trim().TrimEnd('/');
             if (string.IsNullOrEmpty(baseUrl)) return "⚠ 请先填写远程 Server 地址。";
+            if (_isRemoteSyncInFlight) return "正在同步中，请稍候...";
 
+            long versionSnapshot = _localDataVersion;
+            _isRemoteSyncInFlight = true;
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) })
@@ -931,6 +1043,7 @@ namespace DesktopMemo
                         {
                             return "⚠ 推送失败 HTTP " + (int)resp.StatusCode;
                         }
+                        _pushedDataVersion = Math.Max(_pushedDataVersion, versionSnapshot);
                         return string.Format("✓ 已推送本地 {0} 条任务到服务器 ({1})", Data.Tasks.Count, DateTime.Now.ToString("HH:mm:ss"));
                     }
                 }
@@ -938,6 +1051,24 @@ namespace DesktopMemo
             catch (Exception ex)
             {
                 return "⚠ 推送失败：" + ex.Message;
+            }
+            finally
+            {
+                _isRemoteSyncInFlight = false;
+                if (Config.RemoteSyncEnabled && !string.IsNullOrWhiteSpace(Config.RemoteServerUrl) && _localDataVersion > _pushedDataVersion)
+                {
+                    _remotePushTimer.Stop();
+                    _remotePushTimer.Start();
+                }
+            }
+        }
+
+        private async Task AutoPushIfDirtyAsync()
+        {
+            if (Config.RemoteSyncEnabled && !string.IsNullOrWhiteSpace(Config.RemoteServerUrl)
+                && !_isRemoteSyncInFlight && _localDataVersion > _pushedDataVersion)
+            {
+                await PushToRemoteServerAsync();
             }
         }
 

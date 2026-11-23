@@ -10,6 +10,7 @@ restore/
 # 编译产物
 DesktopMemo.exe
 DesktopMemoServer.exe
+*_prev.exe
 bin/
 obj/
 *.pdb

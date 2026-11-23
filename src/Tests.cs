@@ -25,6 +25,7 @@ namespace DesktopMemo
             RunTest("ThemeGlassScaleAndSpringEase", TestThemeAndQuadrantPalettes);
             RunTest("AutoStartRegistryRead", TestAutoStartRegistryRead);
             RunTest("WpfUiSmokeConstruction", TestWpfUiSmokeConstruction);
+            RunTest("StickyQuickAddAndRemoteSyncMerge", TestStickyQuickAddAndRemoteSyncMerge);
 
             string summary = string.Format("SUMMARY: passed={0}, failed={1}\r\n", _passed, _failed);
             _log.Append(summary);
@@ -327,6 +328,75 @@ namespace DesktopMemo
                 dlg.Close();
                 sticky.Close();
                 dash.Close();
+            }
+            finally
+            {
+                try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        private static void TestStickyQuickAddAndRemoteSyncMerge()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "DesktopMemo_SyncMerge_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            try
+            {
+                var storage = new StorageService(tempDir);
+                var controller = new TrayAndAppController(storage);
+                StickyNote localNote = controller.Data.StickyNotes[0];
+                localNote.Visible = true;
+                localNote.Left = 500;
+                localNote.Top = 240;
+                localNote.PinMode = "desktop";
+                localNote.Theme = "claude_warm";
+                localNote.Locked = true;
+
+                var added = new MemoTask
+                {
+                    Title = "Quick Enter Sticky Item",
+                    Quadrant = 0,
+                    NoteId = localNote.Id
+                };
+                controller.AddTask(added);
+
+                AssertTrue(controller.LocalDataVersion > 0, "LocalDataVersion must increment on AddTask");
+                AssertEqual(true, controller.HasPendingRemotePush, "HasPendingRemotePush must be true after local AddTask");
+                AssertTrue(controller.Data.Tasks.Exists(t => t.Id == added.Id && t.NoteId == localNote.Id), "Task must persist with matching NoteId");
+
+                var remoteNote = new StickyNote
+                {
+                    Id = localNote.Id,
+                    Title = "远程新标题",
+                    Content = "远程新内容",
+                    ShowScratchpad = true,
+                    FilterMode = "custom",
+                    Visible = false,
+                    Left = 10,
+                    Top = 10,
+                    Width = 260,
+                    Height = 200,
+                    PinMode = "normal",
+                    Theme = "linear_dark",
+                    Locked = false
+                };
+
+                List<StickyNote> merged = TrayAndAppController.MergePulledStickyNotes(
+                    new List<StickyNote> { localNote },
+                    new List<StickyNote> { remoteNote });
+
+                AssertEqual(1, merged.Count, "Merged sticky list should keep count");
+                AssertEqual(true, merged[0].Visible, "Merge must preserve desktop Visible state");
+                AssertEqual(500.0, merged[0].Left, "Merge must preserve desktop Left position");
+                AssertEqual(240.0, merged[0].Top, "Merge must preserve desktop Top position");
+                AssertEqual("desktop", merged[0].PinMode, "Merge must preserve desktop PinMode");
+                AssertEqual("claude_warm", merged[0].Theme, "Merge must preserve desktop Theme");
+                AssertEqual(true, merged[0].Locked, "Merge must preserve desktop Locked state");
+                AssertEqual("远程新标题", merged[0].Title, "Merge should update Title from remote");
+                AssertEqual("远程新内容", merged[0].Content, "Merge should update Content from remote");
+
+                var stickyWin = new StickyNoteWindow(localNote, controller);
+                stickyWin.RebindNote(merged[0]);
+                stickyWin.ApplyThemeAndContent();
+                stickyWin.Close();
             }
             finally
             {
