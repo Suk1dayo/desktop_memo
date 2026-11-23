@@ -3,6 +3,10 @@ data/
 data/*.json
 data/backups/
 
+# 加密保险箱与还原目录（如需把加密备份同步到 GitHub，用 git add -f vault/xxx.vault 显式添加）
+vault/
+restore/
+
 # 编译产物
 DesktopMemo.exe
 DesktopMemoServer.exe

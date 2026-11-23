@@ -123,6 +123,8 @@ desktop_memo/
 │   ├── style.css
 │   └── app.js
 ├── data/                       # 运行期数据（已被 .gitignore 排除）
+├── tools/
+│   └── DataVault.ps1           # data/ 加密保险箱（AES-256 + HMAC）
 ├── build.bat                   # 一键编译桌面端 + 服务端
 ├── start_server.bat            # 启动网页后端起服务
 ├── setup_windows_server.ps1    # Windows Server 一键部署
@@ -137,6 +139,35 @@ desktop_memo/
 - `data/` 目录已被 `.gitignore` 排除：**不要**把含 API Key 或访问口令的配置文件提交到公开仓库。
 - AI 功能使用 OpenAI 兼容接口（默认 DeepSeek），API Key 仅存本地，请自行在设置页填写。
 - 网页后端为口令登录，公网部署请务必设置强口令，并建议前置 HTTPS 反向代理。
+
+---
+
+## 数据加密（DataVault）
+
+`data/` 里的 `config.json` 含 AI Key 与服务器口令，属于明文。需要备份、上传网盘或同步到 GitHub 时，用 `tools/DataVault.ps1` 先加密：
+
+```powershell
+# 口令模式：AES-256-CBC + PBKDF2-SHA256(200k) + HMAC-SHA256，跨设备可还原
+.\tools\DataVault.ps1 lock -Passphrase "你的长口令"
+
+# 本机模式：DPAPI 绑定当前 Windows 用户，不用记口令，但换机/换用户无法解密
+.\tools\DataVault.ps1 lock -Dpapi
+
+# 查看已有保险箱
+.\tools\DataVault.ps1 list
+
+# 还原
+.\tools\DataVault.ps1 unlock -VaultFile .\vault\xxx.vault -Passphrase "你的长口令" -OutDir .\restore
+```
+
+- 产物是单个 `vault\desktop_memo_data_<时间戳>.vault`；加密后会立即解密回读并校验 SHA-256，`Verify: OK` 才算成功。
+- 采用 **Encrypt-then-MAC**：口令错误或文件被改动都会直接报 MAC 校验失败，不会解出半截脏数据。
+- `vault/` 默认被 `.gitignore` 忽略。确实要把加密备份传到 GitHub 时，用 `git add -f vault/xxx.vault` 显式添加；公开仓库里放密文可以，但请确保口令足够强（≥16 位随机）。
+- 加密只保护"静止数据"（备份文件）。程序运行时仍需读取 `data/` 明文，所以本机安全要靠 Windows 账户密码与磁盘加密（BitLocker）。
+
+### 关于本仓库的同步方式
+
+**本项目不是实时同步。** `git` 只在执行 `git commit` + `git push` 时才把内容推到 GitHub；在文件夹里编辑文件、新增文件都只留在本地，`git status` 能看到 `modified` / `untracked`，但远程仓库毫无变化。`.gitignore` 中的 `data/`、`vault/`、`restore/`、`*.exe` 即使被改动也永远不会被提交。
 
 ---
 
