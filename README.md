@@ -171,6 +171,51 @@ desktop_memo/
 
 ---
 
+## 公网访问：域名 + 自动 HTTPS
+
+### 前置条件
+
+1. **域名已完成 ICP 备案**（国内服务器强制）。后缀必须在工信部白名单内：`.com` `.net` `.cn` `.top` `.xyz` `.club` `.site` 等可以，`.win` `.dev` 之类不行。
+2. 域名 A 记录指向服务器公网 IP，80 与 443 能从公网访问。
+
+### 一键配置
+
+以**管理员**身份运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\Install-Caddy.ps1 -Domain memo.example.com -Email you@example.com
+```
+
+脚本会：
+
+| 步骤 | 动作 |
+| --- | --- |
+| 1 | 准备 `caddy.exe`（缺失时自动下载） |
+| 2 | 生成 `Caddyfile`，`caddy fmt` 规范化 + `validate` 校验 |
+| 3 | 防火墙放行 80/443，**封禁 8765 公网入站**（Caddy 走本机回环不受影响） |
+| 4 | 注册 `DesktopMemoCaddy` 开机自启任务（SYSTEM），启动并验证进程 |
+
+最终效果：
+
+```
+https://memo.example.com  ──443(TLS)──>  Caddy  ──127.0.0.1:8765──>  DesktopMemoServer
+```
+
+- 证书由 Caddy 自动申请并续期（Let's Encrypt），无需手动操作
+- HTTP 自动 301 跳 HTTPS，附带 HSTS
+- 8765 不再对公网暴露，外部只能访问 443
+
+### 备案要点（个人）
+
+- 需要包年包月服务器（剩余 ≥3 个月）才能申请备案授权码
+- 材料：身份证正反面、本人手机号、邮箱、人脸核验（腾讯云 APP）
+- 网站名称要体现个人性质（如「XX的备忘录」），不要含「平台/系统/官网」等经营性或机构性词汇
+- 备案期间域名**不要解析到服务器**，否则会被判定「未备案先上线」而驳回
+- 周期：接入商初审 1–2 工作日 + 管局审核 5–20 工作日，之后完成工信部短信核验
+- 备案通过后 30 日内，部分省份还需做**公安联网备案**
+
+---
+
 ## 许可证
 
 MIT License
