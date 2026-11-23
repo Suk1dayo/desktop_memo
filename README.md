@@ -4,6 +4,21 @@
 
 纯 C# / WPF + Win32 原生实现，无第三方运行时依赖，单文件 `.exe` 开箱即用。
 
+![status](https://img.shields.io/badge/build-csc.exe%20%C2%B7%20no%20SDK-blue)
+![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)
+![lang](https://img.shields.io/badge/C%23-.NET%20Framework%204.x-239120)
+
+---
+
+## 下载
+
+不想编译？直接取预构建版本：[**Releases → v2.0.0**](https://github.com/Suk1dayo/desktop_memo/releases/tag/v2.0.0)
+
+| 文件 | 说明 |
+| --- | --- |
+| `DesktopMemo.exe` | 桌面端，双击即用 |
+| `DesktopMemoServer.exe` | 网页后端，需与 `web/`、`data/` 同目录运行 |
+
 ---
 
 ## 功能亮点 (v2.0)
