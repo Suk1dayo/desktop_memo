@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DesktopMemo · 桌面备忘录</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="theme-light">
+  <div id="loginView" class="login-screen hidden">
+    <div class="login-card glass-surface">
+      <div class="brand-mark">✦</div>
+      <h1>DesktopMemo</h1>
+      <p class="muted">请输入服务器访问口令以查看与管理桌面备忘录</p>
+      <form id="loginForm">
+        <input id="loginPassword" type="password" placeholder="输入访问口令" autocomplete="current-password" required />
+        <button type="submit" class="btn-primary full-width">进入工作区</button>
+      </form>
+      <p id="loginError" class="error-text hidden"></p>
+    </div>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-row">
+          <span class="brand-mark small">✦</span>
+          <span class="brand-name">DesktopMemo</span>
+        </div>
+        <span class="version-pill">v2.0</span>
+      </div>
+
+      <nav class="nav-list">
+        <button class="nav-btn active" data-tab="quadrants">四象限矩阵</button>
+        <button class="nav-btn" data-tab="schedule">日程 &amp; DDL</button>
+        <button class="nav-btn" data-tab="extract">💬 微信聊天提取</button>
+        <button class="nav-btn" data-tab="notes">独立便签</button>
+        <button class="nav-btn" data-tab="settings">AI 与设置</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="themeToggleBtn" class="btn-ghost full-width">◐ 切换明暗主题</button>
+        <button id="logoutBtn" class="btn-ghost full-width">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="main-canvas">
+      <header class="topbar">
+        <div>
+          <h2 id="pageTitle">四象限矩阵</h2>
+          <span id="summaryMeta" class="muted"></span>
+        </div>
+        <div class="topbar-actions">
+          <button id="aiSortBtn" class="btn-accent">✨ AI 智能排序</button>
+          <button id="openNewTaskBtn" class="btn-primary">+ 新建任务</button>
+        </div>
+      </header>
+
+      <div id="statusToast" class="status-banner hidden"></div>
+
+      <!-- Tab 1: Quadrants -->
+      <section id="tab-quadrants" class="tab-panel active">
+        <div class="quad-grid" id="quadGrid"></div>
+      </section>
+
+      <!-- Tab 2: Schedule & DDL -->
+      <section id="tab-schedule" class="tab-panel">
+        <div class="toolbar">
+          <input id="searchInput" type="search" placeholder="搜索任务标题或备注..." />
+          <select id="filterSelect">
+            <option value="pending">未完成待办</option>
+            <option value="urgent">临近 / 已逾期 DDL</option>
+            <option value="unclassified">未分类（独立便签）</option>
+            <option value="all">全部事项</option>
+            <option value="completed">已完成事项</option>
+          </select>
+          <select id="sortSelect">
+            <option value="ai">排序：AI 综合优先</option>
+            <option value="ddl">排序：DDL 最近优先</option>
+            <option value="quadrant">排序：四象限顺序</option>
+          </select>
+        </div>
+        <div id="scheduleList" class="task-stack"></div>
+      </section>
+
+      <!-- Tab 3: WeChat / Chat AI Extraction -->
+      <section id="tab-extract" class="tab-panel">
+        <div class="editorial-card">
+          <h3>粘贴微信聊天记录、课程通知或会议分工</h3>
+          <p class="muted">AI 会结合当前日期自动拆解多项任务、推算 DDL 与四象限，你可以逐条勾选确认或修改后再写入。</p>
+          <textarea id="chatExtractInput" rows="5" placeholder="例如：&#10;@全体成员 下周三下午4点前把机器学习实验报告发到班长邮箱，记得周五晚上8点还有小组线上开会讨论PPT分工..."></textarea>
+          <div class="row-actions">
+            <button id="runExtractBtn" class="btn-accent">✨ AI 解析任务</button>
+            <span id="extractStatus" class="muted"></span>
+          </div>
+        </div>
+        <div id="extractPreviewList" class="task-stack"></div>
+        <div id="extractConfirmBar" class="row-actions hidden">
+          <button id="confirmExtractBtn" class="btn-primary">✓ 确认添加选中任务</button>
+        </div>
+      </section>
+
+      <!-- Tab 4: Sticky Notes -->
+      <section id="tab-notes" class="tab-panel">
+        <div class="toolbar">
+          <button id="newNoteBtn" class="btn-primary">+ 新建独立便签</button>
+        </div>
+        <div id="notesGrid" class="notes-grid"></div>
+      </section>
+
+      <!-- Tab 5: AI & Settings -->
+      <section id="tab-settings" class="tab-panel">
+        <div class="editorial-card settings-form">
+          <h3>AI 智能排序接口设置</h3>
+          <label>服务商预设
+            <select id="aiPresetSelect">
+              <option value="deepseek">DeepSeek (deepseek-chat)</option>
+              <option value="deepseek_reasoner">DeepSeek Reasoner (R1)</option>
+              <option value="openai">OpenAI (gpt-4o-mini)</option>
+              <option value="siliconflow">硅基流动 SiliconFlow</option>
+              <option value="qwen">阿里通义千问</option>
+              <option value="custom">自定义 OpenAI 兼容接口</option>
+            </select>
+          </label>
+          <label>API Base URL
+            <input id="aiBaseUrlInput" type="text" placeholder="https://api.deepseek.com/v1" />
+          </label>
+          <label>模型名称
+            <input id="aiModelInput" type="text" placeholder="deepseek-chat" />
+          </label>
+          <label>API Key <span id="keyStatusHint" class="muted"></span>
+            <input id="aiKeyInput" type="password" placeholder="留空表示保持服务器现有 Key 不变" />
+          </label>
+          <label>个人排序偏好（可选）
+            <input id="aiCustomInput" type="text" placeholder="例如：考试和汇报最优先，生活琐事排后面" />
+          </label>
+          <div class="row-actions">
+            <button id="saveAiConfigBtn" class="btn-primary">保存 AI 配置</button>
+            <span id="aiSaveStatus" class="muted"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Task Modal -->
+  <div id="taskModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <h3 id="modalTitle">新建任务</h3>
+      <label>标题
+        <input id="mTitle" type="text" placeholder="输入待办标题" />
+      </label>
+      <label>备注
+        <textarea id="mNotes" rows="2" placeholder="可选补充说明"></textarea>
+      </label>
+      <div class="two-col">
+        <label>四象限
+          <select id="mQuad">
+            <option value="0">未分类（独立便签）</option>
+            <option value="1">Q1 重要且紧急</option>
+            <option value="2">Q2 重要不紧急</option>
+            <option value="3">Q3 紧急不重要</option>
+            <option value="4">Q4 不重要不紧急</option>
+          </select>
+        </label>
+        <label>所属便签
+          <select id="mNoteId">
+            <option value="">全局日程</option>
+          </select>
+        </label>
+      </div>
+      <div class="two-col">
+        <label>DDL 截止时间
+          <input id="mDdl" type="datetime-local" />
+        </label>
+        <label>定时提醒时间
+          <input id="mRem" type="datetime-local" />
+        </label>
+      </div>
+      <div class="row-actions end">
+        <button id="mCancelBtn" class="btn-ghost">取消</button>
+        <button id="mSaveBtn" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

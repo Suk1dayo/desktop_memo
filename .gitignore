@@ -1,0 +1,20 @@
+# 运行期用户数据：含 API Key、服务器口令、个人任务内容 —— 绝不入库
+data/
+data/*.json
+data/backups/
+
+# 编译产物
+DesktopMemo.exe
+DesktopMemoServer.exe
+bin/
+obj/
+*.pdb
+*.user
+
+# IDE / 系统
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.log
