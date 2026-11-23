@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace DesktopMemo
@@ -83,6 +84,12 @@ namespace DesktopMemo
                 AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
                 {
                     storage.LogError("AppDomain.UnhandledException", e.ExceptionObject as Exception);
+                };
+
+                TaskScheduler.UnobservedTaskException += delegate(object s, UnobservedTaskExceptionEventArgs e)
+                {
+                    storage.LogError("UnobservedTaskException", e.Exception);
+                    e.SetObserved();
                 };
 
                 controller = new TrayAndAppController(storage);

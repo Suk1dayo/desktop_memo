@@ -20,10 +20,17 @@ namespace DesktopMemo
         private bool _isAdjustingZ = false;
         private bool _suppressSettingEvents = false;
         private int _activeTabIndex = 0; // 0=Quadrants, 1=Schedule, 2=Stickies, 3=Settings
+        private string _appliedResourceKey;
+        private string _appliedPinMode;
+        private bool _isImeComposing = false;
+
+        public bool IsImeComposing { get { return _isImeComposing; } }
 
         private Border _outerCard;
         private Border _headerBar;
         private TextBlock _headerTitleText;
+        private Border _headerVersionBadge;
+        private TextBlock _headerVersionText;
         private TextBlock _headerSummaryText;
         private Border _modeBoxBorder;
         private Button _modePanelBtn;
@@ -104,7 +111,7 @@ namespace DesktopMemo
             _controller = controller;
             AppConfig cfg = _controller.Config;
 
-            Title = "桌面备忘录 · 智能四象限";
+            Title = "桌面备忘录 " + AppMeta.VersionTag + " · 智能四象限";
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -135,6 +142,17 @@ namespace DesktopMemo
                 OnGeometryChanged(s, e);
                 UpdateDockIndicator(false);
             };
+            TextCompositionManager.AddPreviewTextInputStartHandler(this, delegate { _isImeComposing = true; });
+            TextCompositionManager.AddPreviewTextInputUpdateHandler(this, delegate(object s, TextCompositionEventArgs e)
+            {
+                _isImeComposing = (e.TextComposition != null && !string.IsNullOrEmpty(e.TextComposition.CompositionText));
+            });
+            TextCompositionManager.AddPreviewTextInputHandler(this, delegate { _isImeComposing = false; });
+            Deactivated += delegate { _isImeComposing = false; };
+            PreviewKeyDown += delegate(object s, KeyEventArgs e)
+            {
+                if (e.Key == Key.Escape) _isImeComposing = false;
+            };
             _isInitializing = false;
         }
 
@@ -145,6 +163,7 @@ namespace DesktopMemo
             {
                 src.AddHook(WndProcHook);
             }
+            _appliedPinMode = null;
             ApplyPinModeNow();
         }
 
@@ -159,7 +178,20 @@ namespace DesktopMemo
         public void ApplyPinModeNow()
         {
             Win32Native.ApplyPinMode(this, _controller.Config.PanelPinMode, ref _isAdjustingZ);
+            _appliedPinMode = _controller.Config.PanelPinMode;
             UpdateHeaderButtons();
+        }
+
+        public void EnsurePinModeApplied()
+        {
+            if (!string.Equals(_appliedPinMode, _controller.Config.PanelPinMode, StringComparison.Ordinal))
+            {
+                ApplyPinModeNow();
+            }
+            else
+            {
+                UpdateHeaderButtons();
+            }
         }
 
         private void OnGeometryChanged(object sender, EventArgs e)
@@ -224,6 +256,24 @@ namespace DesktopMemo
                 VerticalAlignment = VerticalAlignment.Center
             };
             titleStack.Children.Add(_headerTitleText);
+
+            _headerVersionText = new TextBlock
+            {
+                Text = AppMeta.VersionTag,
+                FontFamily = ThemeService.AppFontFamily,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold
+            };
+            _headerVersionBadge = new Border
+            {
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(6, 1, 6, 1),
+                Margin = new Thickness(8, 1, 0, 0),
+                BorderThickness = new Thickness(1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = _headerVersionText
+            };
+            titleStack.Children.Add(_headerVersionBadge);
 
             _headerSummaryText = new TextBlock
             {
@@ -1028,6 +1078,17 @@ namespace DesktopMemo
             // Section 4: Portable Storage
             var dataCard = CreateSettingsCard("💾 便携数据存储（data 目录随程序携带，方便直接拷贝/网盘同步）");
             var dataStack = (StackPanel)dataCard.Child;
+            var versionTb = new TextBlock
+            {
+                Text = "当前版本：DesktopMemo " + AppMeta.VersionTag,
+                FontFamily = ThemeService.AppFontFamily,
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            _settingsLabels.Add(versionTb);
+            dataStack.Children.Add(versionTb);
+
             var pathTb = new TextBlock
             {
                 Text = "当前数据目录：" + _controller.Storage.DataDirectory,
@@ -1288,7 +1349,15 @@ namespace DesktopMemo
             ThemePalette pal = ThemeService.GetPalette(cfg.PanelTheme, cfg.PanelOpacity);
             UiScaleMetrics scale = ThemeService.GetScaleMetrics(cfg.UiScale, cfg.PanelFontSize);
 
-            GlassControlStyles.ApplyToResources(Resources, pal, scale);
+            string resKey = ThemeService.NormalizeThemeKey(cfg.PanelTheme) + "|"
+                + Math.Round(cfg.PanelOpacity, 2).ToString(System.Globalization.CultureInfo.InvariantCulture) + "|"
+                + (cfg.UiScale ?? "standard") + "|"
+                + Math.Round(cfg.PanelFontSize, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!_isImeComposing && !string.Equals(_appliedResourceKey, resKey, StringComparison.Ordinal))
+            {
+                GlassControlStyles.ApplyToResources(Resources, pal, scale);
+                _appliedResourceKey = resKey;
+            }
 
             _outerCard.Background = pal.CardBg;
             _outerCard.BorderBrush = pal.Border;
@@ -1297,6 +1366,13 @@ namespace DesktopMemo
 
             _headerTitleText.Foreground = pal.TextPrimary;
             _headerTitleText.FontSize = scale.HeaderFontSize;
+            if (_headerVersionBadge != null && _headerVersionText != null)
+            {
+                _headerVersionBadge.Background = pal.HoverBg;
+                _headerVersionBadge.BorderBrush = pal.Border;
+                _headerVersionText.Foreground = pal.TextSecondary;
+                _headerVersionText.FontSize = Math.Max(10, scale.SmallFontSize);
+            }
             _headerSummaryText.Foreground = pal.TextSecondary;
             _headerSummaryText.FontSize = scale.SmallFontSize + 0.5;
             _modeBoxBorder.Background = pal.PillGlassBg;

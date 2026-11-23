@@ -4,6 +4,12 @@ using System.Globalization;
 
 namespace DesktopMemo
 {
+    public static class AppMeta
+    {
+        public const string Version = "2.02";
+        public const string VersionTag = "v2.02";
+    }
+
     public class DeadlineDisplayInfo
     {
         public string Text { get; set; }

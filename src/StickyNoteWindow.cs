@@ -19,6 +19,11 @@ namespace DesktopMemo
         private bool _isInitializing = true;
         private bool _isAdjustingZ = false;
         private bool _suppressTextSync = false;
+        private string _appliedResourceKey;
+        private string _appliedPinMode;
+        private bool _isImeComposing = false;
+
+        public bool IsImeComposing { get { return _isImeComposing; } }
 
         private Border _outerCard;
         private Border _headerBar;
@@ -74,6 +79,17 @@ namespace DesktopMemo
             LocationChanged += OnGeometryChanged;
             SizeChanged += OnGeometryChanged;
             PreviewMouseWheel += OnPreviewMouseWheelZoom;
+            TextCompositionManager.AddPreviewTextInputStartHandler(this, delegate { _isImeComposing = true; });
+            TextCompositionManager.AddPreviewTextInputUpdateHandler(this, delegate(object s, TextCompositionEventArgs e)
+            {
+                _isImeComposing = (e.TextComposition != null && !string.IsNullOrEmpty(e.TextComposition.CompositionText));
+            });
+            TextCompositionManager.AddPreviewTextInputHandler(this, delegate { _isImeComposing = false; });
+            Deactivated += delegate { _isImeComposing = false; };
+            PreviewKeyDown += delegate(object s, KeyEventArgs e)
+            {
+                if (e.Key == Key.Escape) _isImeComposing = false;
+            };
             _isInitializing = false;
         }
 
@@ -84,6 +100,7 @@ namespace DesktopMemo
             {
                 src.AddHook(WndProcHook);
             }
+            _appliedPinMode = null;
             ApplyPinModeNow();
         }
 
@@ -102,7 +119,20 @@ namespace DesktopMemo
         public void ApplyPinModeNow()
         {
             Win32Native.ApplyPinMode(this, _note.PinMode, ref _isAdjustingZ);
+            _appliedPinMode = _note.PinMode;
             UpdatePinAndLockButtons();
+        }
+
+        public void EnsurePinModeApplied()
+        {
+            if (!string.Equals(_appliedPinMode, _note.PinMode, StringComparison.Ordinal))
+            {
+                ApplyPinModeNow();
+            }
+            else
+            {
+                UpdatePinAndLockButtons();
+            }
         }
 
         private void OnGeometryChanged(object sender, EventArgs e)
@@ -411,7 +441,15 @@ namespace DesktopMemo
             double effectiveFont = _note.FontSize;
             UiScaleMetrics scale = ThemeService.GetScaleMetrics(_controller.Config.UiScale, effectiveFont);
 
-            GlassControlStyles.ApplyToResources(Resources, pal, scale);
+            string resKey = ThemeService.NormalizeThemeKey(_note.Theme) + "|"
+                + Math.Round(_note.Opacity, 2).ToString(System.Globalization.CultureInfo.InvariantCulture) + "|"
+                + (_controller.Config.UiScale ?? "standard") + "|"
+                + Math.Round(effectiveFont, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!_isImeComposing && !string.Equals(_appliedResourceKey, resKey, StringComparison.Ordinal))
+            {
+                GlassControlStyles.ApplyToResources(Resources, pal, scale);
+                _appliedResourceKey = resKey;
+            }
 
             _outerCard.Background = pal.CardBg;
             _outerCard.BorderBrush = pal.Border;

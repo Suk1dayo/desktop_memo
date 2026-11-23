@@ -226,7 +226,7 @@ namespace DesktopMemo
                 WriteJson(stream, 200, new Dictionary<string, object>
                 {
                     { "ok", true },
-                    { "version", "2.01" },
+                    { "version", AppMeta.Version },
                     { "time", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") }
                 });
                 return;

@@ -305,6 +305,8 @@ namespace DesktopMemo
                 var undoToast = new UndoToastWindow("测试日程", "claude_warm");
 
                 AssertTrue(dash != null && sticky != null && dlg != null && chatDlg != null && toast != null && undoToast != null, "All WPF windows constructed");
+                AssertEqual("2.02", AppMeta.Version, "AppMeta.Version must be 2.02");
+                AssertEqual("v2.02", AppMeta.VersionTag, "AppMeta.VersionTag must be v2.02");
                 AssertEqual(System.Windows.WindowStyle.None, dash.WindowStyle, "Dashboard WindowStyle must be None (no Win32 close button)");
                 AssertEqual(true, dash.AllowsTransparency, "Dashboard AllowsTransparency must be true");
                 AssertEqual(System.Windows.WindowStyle.None, sticky.WindowStyle, "Sticky WindowStyle must be None (no Win32 close button)");
@@ -321,6 +323,26 @@ namespace DesktopMemo
 
                 controller.Data.StickyNotes[0].ShowScratchpad = true;
                 sticky.ApplyThemeAndContent();
+
+                object dashBeforeRes = dash.Resources[typeof(System.Windows.Controls.TextBox)];
+                dash.ApplyThemeAndRefreshAll();
+                object dashAfterRes = dash.Resources[typeof(System.Windows.Controls.TextBox)];
+                AssertTrue(object.ReferenceEquals(dashBeforeRes, dashAfterRes),
+                    "Unchanged Dashboard theme/scale must reuse cached TextBox Style without rebuilding IME visual tree");
+
+                object stickyBeforeRes = sticky.Resources[typeof(System.Windows.Controls.TextBox)];
+                sticky.ApplyThemeAndContent();
+                object stickyAfterRes = sticky.Resources[typeof(System.Windows.Controls.TextBox)];
+                AssertTrue(object.ReferenceEquals(stickyBeforeRes, stickyAfterRes),
+                    "Unchanged StickyNote theme/scale must reuse cached TextBox Style without rebuilding IME visual tree");
+
+                string origNoteTheme = controller.Data.StickyNotes[0].Theme;
+                controller.Data.StickyNotes[0].Theme = origNoteTheme == "linear_dark" ? "claude_warm" : "linear_dark";
+                sticky.ApplyThemeAndContent();
+                object stickyChangedRes = sticky.Resources[typeof(System.Windows.Controls.TextBox)];
+                AssertTrue(!object.ReferenceEquals(stickyBeforeRes, stickyChangedRes),
+                    "Changing StickyNote theme must refresh TextBox Style");
+                controller.Data.StickyNotes[0].Theme = origNoteTheme;
 
                 undoToast.Close();
                 toast.Close();

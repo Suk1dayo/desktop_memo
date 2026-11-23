@@ -85,20 +85,34 @@ namespace DesktopMemo
             _remotePushTimer.Tick += async delegate
             {
                 _remotePushTimer.Stop();
-                await AutoPushIfDirtyAsync();
+                try
+                {
+                    await AutoPushIfDirtyAsync();
+                }
+                catch (Exception ex)
+                {
+                    Storage.LogError("RemotePushTimer", ex);
+                }
             };
 
             _remoteSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
             _remoteSyncTimer.Tick += async delegate
             {
-                if (!Config.RemoteSyncEnabled || string.IsNullOrWhiteSpace(Config.RemoteServerUrl) || _isRemoteSyncInFlight) return;
-                if (_localDataVersion > _pushedDataVersion)
+                try
                 {
-                    await AutoPushIfDirtyAsync();
+                    if (!Config.RemoteSyncEnabled || string.IsNullOrWhiteSpace(Config.RemoteServerUrl) || _isRemoteSyncInFlight) return;
+                    if (_localDataVersion > _pushedDataVersion)
+                    {
+                        await AutoPushIfDirtyAsync();
+                    }
+                    else if (!IsAnyWindowImeComposing())
+                    {
+                        await PullFromRemoteServerAsync(false);
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    await PullFromRemoteServerAsync(false);
+                    Storage.LogError("RemoteSyncTimer", ex);
                 }
             };
 
@@ -110,7 +124,10 @@ namespace DesktopMemo
                 SaveDataMarkSelf();
                 RefreshAllViews();
             };
-            _reminderService.RefreshUiTick = RefreshAllViews;
+            _reminderService.RefreshUiTick = delegate
+            {
+                if (!IsAnyWindowImeComposing()) RefreshAllViews();
+            };
         }
 
         private void SaveDataMarkSelf()
@@ -312,11 +329,21 @@ namespace DesktopMemo
             ScheduleConfigSave();
         }
 
+        public bool IsAnyWindowImeComposing()
+        {
+            if (_dashboardWindow != null && _dashboardWindow.IsImeComposing) return true;
+            foreach (StickyNoteWindow w in _stickyWindows.Values)
+            {
+                if (w != null && w.IsImeComposing) return true;
+            }
+            return false;
+        }
+
         public void ApplyDisplayModeVisibility()
         {
             if (_allHiddenByUser)
             {
-            if (_dashboardWindow != null) _dashboardWindow.Hide();
+                if (_dashboardWindow != null) _dashboardWindow.Hide();
                 foreach (StickyNoteWindow w in _stickyWindows.Values) w.Hide();
                 return;
             }
@@ -327,8 +354,10 @@ namespace DesktopMemo
             if (showPanel)
             {
                 EnsureDashboardWindow();
-                _dashboardWindow.Show();
-                _dashboardWindow.ApplyPinModeNow();
+                bool wasVisible = _dashboardWindow.IsVisible;
+                if (!wasVisible) _dashboardWindow.Show();
+                if (!wasVisible) _dashboardWindow.ApplyPinModeNow();
+                else _dashboardWindow.EnsurePinModeApplied();
                 _dashboardWindow.ApplyThemeAndRefreshAll();
             }
             else if (_dashboardWindow != null)
@@ -413,8 +442,10 @@ namespace DesktopMemo
 
                 if (shouldShow)
                 {
-                    if (!win.IsVisible) win.Show();
-                    win.ApplyPinModeNow();
+                    bool wasVisible = win.IsVisible;
+                    if (!wasVisible) win.Show();
+                    if (!wasVisible) win.ApplyPinModeNow();
+                    else win.EnsurePinModeApplied();
                     win.ApplyThemeAndContent();
                 }
                 else
@@ -992,10 +1023,34 @@ namespace DesktopMemo
                     AppData pulled = ser.Deserialize<AppData>(stateBody);
                     if (pulled != null && pulled.Tasks != null)
                     {
+                        if (!isManual && IsAnyWindowImeComposing())
+                        {
+                            return "正在使用输入法编辑，已延迟同步";
+                        }
+
+                        List<StickyNote> mergedNotes = (pulled.StickyNotes != null && pulled.StickyNotes.Count > 0)
+                            ? MergePulledStickyNotes(Data.StickyNotes, pulled.StickyNotes)
+                            : Data.StickyNotes;
+
+                        if (!isManual)
+                        {
+                            string currentSerialized = ser.Serialize(Data);
+                            string candidateSerialized = ser.Serialize(new AppData
+                            {
+                                SchemaVersion = Data.SchemaVersion,
+                                Tasks = pulled.Tasks,
+                                StickyNotes = mergedNotes
+                            });
+                            if (string.Equals(currentSerialized, candidateSerialized, StringComparison.Ordinal))
+                            {
+                                return "无变更";
+                            }
+                        }
+
                         Data.Tasks = pulled.Tasks;
                         if (pulled.StickyNotes != null && pulled.StickyNotes.Count > 0)
                         {
-                            Data.StickyNotes = MergePulledStickyNotes(Data.StickyNotes, pulled.StickyNotes);
+                            Data.StickyNotes = mergedNotes;
                         }
                         SaveDataMarkSelf(false);
                         if (isManual)
@@ -1076,7 +1131,7 @@ namespace DesktopMemo
         {
             _trayIcon = new WinForms.NotifyIcon();
             _trayIcon.Icon = ThemeService.CreateAppTrayIcon();
-            _trayIcon.Text = "桌面备忘录 (双击呼出面板)";
+            _trayIcon.Text = "桌面备忘录 " + AppMeta.VersionTag + " (双击呼出面板)";
             _trayIcon.Visible = true;
             _trayIcon.DoubleClick += delegate { ShowDashboardWindow(); };
 

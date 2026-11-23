@@ -260,38 +260,50 @@ namespace DesktopMemo
             }
             else if (msg == WM_WINDOWPOSCHANGING)
             {
-                if (pinMode == "desktop" && !isAdjustingZ)
+                try
                 {
-                    WINDOWPOS wp = (WINDOWPOS)Marshal.PtrToStructure(lParam, typeof(WINDOWPOS));
-                    if ((wp.flags & SWP_NOZORDER) == 0)
+                    if (pinMode == "desktop" && !isAdjustingZ)
                     {
-                        wp.hwndInsertAfter = HWND_BOTTOM;
-                        Marshal.StructureToPtr(wp, lParam, true);
+                        WINDOWPOS wp = (WINDOWPOS)Marshal.PtrToStructure(lParam, typeof(WINDOWPOS));
+                        if ((wp.flags & SWP_NOZORDER) == 0)
+                        {
+                            wp.hwndInsertAfter = HWND_BOTTOM;
+                            Marshal.StructureToPtr(wp, lParam, true);
+                        }
                     }
                 }
+                catch { }
             }
             else if (msg == WM_NCHITTEST && !locked && !collapsed)
             {
-                int screenX = unchecked((short)(lParam.ToInt64() & 0xFFFF));
-                int screenY = unchecked((short)((lParam.ToInt64() >> 16) & 0xFFFF));
-                Point pt = window.PointFromScreen(new Point(screenX, screenY));
-                double w = window.ActualWidth;
-                double h = window.ActualHeight;
-                const double grip = 8.0;
+                try
+                {
+                    if (PresentationSource.FromVisual(window) == null) return IntPtr.Zero;
+                    int screenX = unchecked((short)(lParam.ToInt64() & 0xFFFF));
+                    int screenY = unchecked((short)((lParam.ToInt64() >> 16) & 0xFFFF));
+                    Point pt = window.PointFromScreen(new Point(screenX, screenY));
+                    double w = window.ActualWidth;
+                    double h = window.ActualHeight;
+                    const double grip = 8.0;
 
-                bool left = pt.X >= 0 && pt.X <= grip;
-                bool right = pt.X <= w && pt.X >= w - grip;
-                bool top = pt.Y >= 0 && pt.Y <= grip;
-                bool bottom = pt.Y <= h && pt.Y >= h - grip;
+                    bool left = pt.X >= 0 && pt.X <= grip;
+                    bool right = pt.X <= w && pt.X >= w - grip;
+                    bool top = pt.Y >= 0 && pt.Y <= grip;
+                    bool bottom = pt.Y <= h && pt.Y >= h - grip;
 
-                if (top && left) { handled = true; return new IntPtr(HTTOPLEFT); }
-                if (top && right) { handled = true; return new IntPtr(HTTOPRIGHT); }
-                if (bottom && left) { handled = true; return new IntPtr(HTBOTTOMLEFT); }
-                if (bottom && right) { handled = true; return new IntPtr(HTBOTTOMRIGHT); }
-                if (left) { handled = true; return new IntPtr(HTLEFT); }
-                if (right) { handled = true; return new IntPtr(HTRIGHT); }
-                if (top) { handled = true; return new IntPtr(HTTOP); }
-                if (bottom) { handled = true; return new IntPtr(HTBOTTOM); }
+                    if (top && left) { handled = true; return new IntPtr(HTTOPLEFT); }
+                    if (top && right) { handled = true; return new IntPtr(HTTOPRIGHT); }
+                    if (bottom && left) { handled = true; return new IntPtr(HTBOTTOMLEFT); }
+                    if (bottom && right) { handled = true; return new IntPtr(HTBOTTOMRIGHT); }
+                    if (left) { handled = true; return new IntPtr(HTLEFT); }
+                    if (right) { handled = true; return new IntPtr(HTRIGHT); }
+                    if (top) { handled = true; return new IntPtr(HTTOP); }
+                    if (bottom) { handled = true; return new IntPtr(HTBOTTOM); }
+                }
+                catch
+                {
+                    return IntPtr.Zero;
+                }
             }
 
             return IntPtr.Zero;
