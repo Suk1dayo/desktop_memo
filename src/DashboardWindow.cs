@@ -5,10 +5,12 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
+using System.Windows.Threading;
 
 namespace DesktopMemo
 {
@@ -20,9 +22,14 @@ namespace DesktopMemo
         private bool _isAdjustingZ = false;
         private bool _suppressSettingEvents = false;
         private int _activeTabIndex = 0; // 0=Quadrants, 1=Schedule, 2=Stickies, 3=Settings
-        private string _appliedResourceKey;
+        private string _appliedThemeKey;
+        private string _appliedControlStyleKey;
         private string _appliedPinMode;
         private bool _isImeComposing = false;
+        private DispatcherTimer _fontApplyTimer;
+        private DispatcherTimer _opacityRefreshTimer;
+        private bool _isDraggingFontSlider = false;
+        private bool _isDraggingOpacitySlider = false;
 
         public bool IsImeComposing { get { return _isImeComposing; } }
 
@@ -86,10 +93,12 @@ namespace DesktopMemo
         private bool _showPlainKey = false;
         private TextBox _aiModelBox;
         private TextBox _aiCustomPromptBox;
+        private TextBox _wxExportOutBox;
         private TextBlock _aiTestResultText;
 
         private CheckBox _autoStartBox;
         private TextBlock _autoStartStatusText;
+        private TextBlock _shortcutStatusText;
         private CheckBox _hotkeysBox;
         private CheckBox _soundBox;
         private ComboBox _panelThemeCombo;
@@ -115,7 +124,7 @@ namespace DesktopMemo
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
-            ResizeMode = ResizeMode.NoResize;
+            ResizeMode = ResizeMode.CanResize;
             ShowInTaskbar = false;
             MinWidth = 560;
             MinHeight = 420;
@@ -130,6 +139,31 @@ namespace DesktopMemo
             Top = top;
             Width = width;
             Height = height;
+
+            _fontApplyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(140) };
+            _fontApplyTimer.Tick += delegate
+            {
+                _fontApplyTimer.Stop();
+                if (!_isDraggingFontSlider)
+                {
+                    _controller.ApplyAppearanceToAllWindows();
+                }
+            };
+            _opacityRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(140) };
+            _opacityRefreshTimer.Tick += delegate
+            {
+                _opacityRefreshTimer.Stop();
+                if (!_isDraggingOpacitySlider)
+                {
+                    RefreshTaskViews();
+                    RefreshStickiesManagerView();
+                }
+            };
+            Closed += delegate
+            {
+                if (_fontApplyTimer != null) _fontApplyTimer.Stop();
+                if (_opacityRefreshTimer != null) _opacityRefreshTimer.Stop();
+            };
 
             BuildUi();
             ApplyThemeAndRefreshAll();
@@ -172,7 +206,7 @@ namespace DesktopMemo
             AppConfig cfg = _controller.Config;
             return Win32Native.HandleDesktopAndResizeMessages(
                 this, hwnd, msg, wParam, lParam,
-                cfg.PanelPinMode, cfg.PanelLocked, false, _isAdjustingZ, ref handled);
+                cfg.PanelPinMode, cfg.PanelLocked, false, _isAdjustingZ, 10.0, ref handled);
         }
 
         public void ApplyPinModeNow()
@@ -212,7 +246,7 @@ namespace DesktopMemo
         {
             _outerCard = new Border
             {
-                Margin = new Thickness(10),
+                Margin = new Thickness(0),
                 CornerRadius = new CornerRadius(14),
                 BorderThickness = new Thickness(1),
                 Effect = new DropShadowEffect
@@ -517,7 +551,14 @@ namespace DesktopMemo
 
             rootDock.Children.Add(_mainContentGrid);
             _outerCard.Child = rootDock;
-            Content = _outerCard;
+            Content = new Border
+            {
+                Margin = new Thickness(7),
+                Padding = new Thickness(3),
+                CornerRadius = new CornerRadius(16),
+                Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)),
+                Child = _outerCard
+            };
         }
 
         private void BuildQuadrantsView()
@@ -817,6 +858,40 @@ namespace DesktopMemo
             _aiCustomPromptBox.LostFocus += delegate { if (!_suppressSettingEvents) SaveAiInputsToConfig(); };
             AddSettingRow(aiGrid, "个人排序偏好：", _aiCustomPromptBox);
 
+            var wxOutRow = new Grid { Margin = new Thickness(0, 3, 0, 8) };
+            wxOutRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            wxOutRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            _wxExportOutBox = new TextBox
+            {
+                Padding = new Thickness(8, 5, 8, 5),
+                ToolTip = "可选：聊天记录导出默认根目录（支持 .md / .jsonl / .txt），便于在「💬 AI提取」一键加载最新导出"
+            };
+            _wxExportOutBox.LostFocus += delegate { if (!_suppressSettingEvents) SaveAiInputsToConfig(); };
+            Grid.SetColumn(_wxExportOutBox, 0);
+            wxOutRow.Children.Add(_wxExportOutBox);
+            var browseWxOutBtn = GlassControlStyles.CreateGlassButton("浏览...",
+                ThemeService.BrushFromHex("#F1F5F9"), ThemeService.BrushFromHex("#334155"), ThemeService.BrushFromHex("#CBD5E1"),
+                11.5, new Thickness(10, 4, 10, 4), 7);
+            browseWxOutBtn.Margin = new Thickness(6, 0, 0, 0);
+            browseWxOutBtn.Click += delegate
+            {
+                using (var fbd = new System.Windows.Forms.FolderBrowserDialog { Description = "选择聊天记录默认导出目录" })
+                {
+                    if (!string.IsNullOrWhiteSpace(_wxExportOutBox.Text) && Directory.Exists(_wxExportOutBox.Text.Trim()))
+                    {
+                        fbd.SelectedPath = _wxExportOutBox.Text.Trim();
+                    }
+                    if (fbd.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+                    {
+                        _wxExportOutBox.Text = fbd.SelectedPath;
+                        SaveAiInputsToConfig();
+                    }
+                }
+            };
+            Grid.SetColumn(browseWxOutBtn, 1);
+            wxOutRow.Children.Add(browseWxOutBtn);
+            AddSettingRow(aiGrid, "导出默认目录：", wxOutRow);
+
             var aiBodyStack = (StackPanel)aiCard.Child;
             aiBodyStack.Children.Add(aiGrid);
 
@@ -884,6 +959,43 @@ namespace DesktopMemo
                 Margin = new Thickness(24, 0, 0, 10)
             };
             sysStack.Children.Add(_autoStartStatusText);
+
+            var shortcutRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+            var createShortcutBtn = GlassControlStyles.CreateGlassButton("📌 一键创建桌面快捷方式",
+                ThemeService.BrushFromHex("#F1F5F9"), ThemeService.BrushFromHex("#0F172A"), ThemeService.BrushFromHex("#CBD5E1"),
+                12, new Thickness(12, 5, 12, 5), 8);
+            createShortcutBtn.Click += delegate
+            {
+                string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DesktopMemo.exe");
+                if (!File.Exists(exePath))
+                {
+                    try { exePath = Process.GetCurrentProcess().MainModule.FileName; } catch { }
+                }
+                string createdPath;
+                string err;
+                if (Win32Native.CreateDesktopShortcut(exePath, "桌面备忘录", "DesktopMemo 桌面备忘录", out createdPath, out err))
+                {
+                    _shortcutStatusText.Text = "✓ 已创建到桌面：" + Path.GetFileName(createdPath);
+                    _shortcutStatusText.Foreground = ThemeService.BrushFromHex("#059669");
+                }
+                else
+                {
+                    _shortcutStatusText.Text = "创建失败：" + err;
+                    _shortcutStatusText.Foreground = ThemeService.BrushFromHex("#DC2626");
+                }
+            };
+            _shortcutStatusText = new TextBlock
+            {
+                FontFamily = ThemeService.AppFontFamily,
+                FontSize = 11.5,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(10, 0, 0, 0),
+                Text = "方便随时从桌面启动",
+                Foreground = ThemeService.BrushFromHex("#64748B")
+            };
+            shortcutRow.Children.Add(createShortcutBtn);
+            shortcutRow.Children.Add(_shortcutStatusText);
+            sysStack.Children.Add(shortcutRow);
 
             _hotkeysBox = new CheckBox
             {
@@ -956,26 +1068,59 @@ namespace DesktopMemo
             _panelFontText = MakeSettingLabel("全局字号(13px)：");
             sliderRow.Children.Add(_panelFontText);
             _panelFontSlider = new Slider { Minimum = 11, Maximum = 18, TickFrequency = 1, IsSnapToTickEnabled = true, Width = 130, Margin = new Thickness(0, 0, 16, 4), VerticalAlignment = VerticalAlignment.Center };
+            _panelFontSlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler(delegate
+            {
+                _isDraggingFontSlider = true;
+                if (_fontApplyTimer != null) _fontApplyTimer.Stop();
+            }));
+            _panelFontSlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(delegate
+            {
+                _isDraggingFontSlider = false;
+                if (_fontApplyTimer != null) _fontApplyTimer.Stop();
+                _controller.ApplyAppearanceToAllWindows();
+            }));
             _panelFontSlider.ValueChanged += delegate
             {
                 if (_suppressSettingEvents) return;
                 _controller.Config.PanelFontSize = Math.Round(_panelFontSlider.Value);
                 _panelFontText.Text = string.Format("全局字号({0}px)：", (int)_controller.Config.PanelFontSize);
-                _controller.ApplyAppearanceToAllWindows();
+                ApplyFontPreviewOnly();
                 _controller.ScheduleConfigSave();
+                if (!_isDraggingFontSlider && _fontApplyTimer != null)
+                {
+                    _fontApplyTimer.Stop();
+                    _fontApplyTimer.Start();
+                }
             };
             sliderRow.Children.Add(_panelFontSlider);
 
             _panelOpacityText = MakeSettingLabel("窗口不透明度(96%)：");
             sliderRow.Children.Add(_panelOpacityText);
             _panelOpacitySlider = new Slider { Minimum = 0.60, Maximum = 1.00, Width = 140, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, 4) };
+            _panelOpacitySlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler(delegate
+            {
+                _isDraggingOpacitySlider = true;
+                if (_opacityRefreshTimer != null) _opacityRefreshTimer.Stop();
+            }));
+            _panelOpacitySlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(delegate
+            {
+                _isDraggingOpacitySlider = false;
+                if (_opacityRefreshTimer != null) _opacityRefreshTimer.Stop();
+                RefreshTaskViews();
+                RefreshStickiesManagerView();
+            }));
             _panelOpacitySlider.ValueChanged += delegate
             {
                 if (_suppressSettingEvents) return;
                 _controller.Config.PanelOpacity = _panelOpacitySlider.Value;
                 _panelOpacityText.Text = string.Format("窗口不透明度({0}%)：", (int)Math.Round(_panelOpacitySlider.Value * 100));
-                ApplyThemeAndRefreshAll();
+                ApplyOpacityBrushesOnly();
                 _controller.ScheduleConfigSave();
+                if (!_isDraggingOpacitySlider && _opacityRefreshTimer != null)
+                {
+                    _opacityRefreshTimer.Stop();
+                    _opacityRefreshTimer.Start();
+                }
             };
             sliderRow.Children.Add(_panelOpacitySlider);
             sysStack.Children.Add(sliderRow);
@@ -1075,8 +1220,8 @@ namespace DesktopMemo
             webStack.Children.Add(_syncStatusText);
             stack.Children.Add(webCard);
 
-            // Section 4: Portable Storage
-            var dataCard = CreateSettingsCard("💾 便携数据存储（data 目录随程序携带，方便直接拷贝/网盘同步）");
+            // Section 4: Portable & Decoupled Storage
+            var dataCard = CreateSettingsCard("💾 程序路径与配置数据存储（安装路径与配置目录支持解耦）");
             var dataStack = (StackPanel)dataCard.Child;
             var versionTb = new TextBlock
             {
@@ -1089,9 +1234,20 @@ namespace DesktopMemo
             _settingsLabels.Add(versionTb);
             dataStack.Children.Add(versionTb);
 
+            var exeDirTb = new TextBlock
+            {
+                Text = "程序安装目录：" + AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'),
+                FontFamily = ThemeService.AppFontFamily,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            _settingsLabels.Add(exeDirTb);
+            dataStack.Children.Add(exeDirTb);
+
             var pathTb = new TextBlock
             {
-                Text = "当前数据目录：" + _controller.Storage.DataDirectory,
+                Text = "配置与数据目录：" + _controller.Storage.DataDirectory,
                 FontFamily = ThemeService.AppFontFamily,
                 FontSize = 12,
                 TextWrapping = TextWrapping.Wrap,
@@ -1259,6 +1415,7 @@ namespace DesktopMemo
             cfg.AiApiKey = _showPlainKey ? (_aiKeyPlainBox.Text ?? "").Trim() : (_aiKeyPasswordBox.Password ?? "").Trim();
             cfg.AiModel = (_aiModelBox.Text ?? "").Trim();
             cfg.AiCustomInstruction = (_aiCustomPromptBox.Text ?? "").Trim();
+            if (_wxExportOutBox != null) cfg.WeChatExportOutputDir = (_wxExportOutBox.Text ?? "").Trim();
             _controller.ScheduleConfigSave();
         }
 
@@ -1297,6 +1454,7 @@ namespace DesktopMemo
                 _aiKeyPlainBox.Text = cfg.AiApiKey ?? "";
                 _aiModelBox.Text = cfg.AiModel ?? "";
                 _aiCustomPromptBox.Text = cfg.AiCustomInstruction ?? "";
+                if (_wxExportOutBox != null) _wxExportOutBox.Text = cfg.WeChatExportOutputDir ?? "";
 
                 bool regAuto = Win32Native.IsAutoStartEnabled();
                 _autoStartBox.IsChecked = regAuto;
@@ -1343,20 +1501,63 @@ namespace DesktopMemo
             }
         }
 
+        private void ApplyOpacityBrushesOnly()
+        {
+            AppConfig cfg = _controller.Config;
+            ThemePalette pal = ThemeService.GetPalette(cfg.PanelTheme, cfg.PanelOpacity);
+            if (_outerCard != null) _outerCard.Background = pal.CardBg;
+            if (_headerBar != null) _headerBar.Background = pal.HeaderBg;
+            if (_chatExtractBtn != null) _chatExtractBtn.Background = pal.SurfaceBg;
+            if (_undoAiBtn != null) _undoAiBtn.Background = pal.SurfaceBg;
+            if (_quickAddBar != null) _quickAddBar.Background = pal.SurfaceBg;
+            if (_clearDoneBtn != null) _clearDoneBtn.Background = pal.SurfaceBg;
+            for (int i = 0; i < _settingsCards.Count; i++)
+            {
+                _settingsCards[i].Background = pal.SurfaceBg;
+            }
+        }
+
+        private void ApplyFontPreviewOnly()
+        {
+            AppConfig cfg = _controller.Config;
+            UiScaleMetrics scale = ThemeService.GetScaleMetrics(cfg.UiScale, cfg.PanelFontSize);
+            if (_headerTitleText != null) _headerTitleText.FontSize = scale.HeaderFontSize;
+            if (_headerVersionText != null) _headerVersionText.FontSize = Math.Max(10, scale.SmallFontSize);
+            if (_headerSummaryText != null) _headerSummaryText.FontSize = scale.SmallFontSize + 0.5;
+            for (int i = 0; i < 4; i++)
+            {
+                if (_navTabButtons[i] != null) _navTabButtons[i].FontSize = scale.FontSize;
+            }
+            for (int i = 0; i < _settingsCardTitles.Count; i++)
+            {
+                _settingsCardTitles[i].FontSize = scale.FontSize + 1;
+            }
+            for (int i = 0; i < _settingsLabels.Count; i++)
+            {
+                _settingsLabels[i].FontSize = scale.SmallFontSize + 1;
+            }
+        }
+
         public void ApplyThemeAndRefreshAll()
         {
             AppConfig cfg = _controller.Config;
             ThemePalette pal = ThemeService.GetPalette(cfg.PanelTheme, cfg.PanelOpacity);
             UiScaleMetrics scale = ThemeService.GetScaleMetrics(cfg.UiScale, cfg.PanelFontSize);
 
-            string resKey = ThemeService.NormalizeThemeKey(cfg.PanelTheme) + "|"
-                + Math.Round(cfg.PanelOpacity, 2).ToString(System.Globalization.CultureInfo.InvariantCulture) + "|"
+            string themeKey = ThemeService.NormalizeThemeKey(cfg.PanelTheme);
+            string controlStyleKey = themeKey + "|"
                 + (cfg.UiScale ?? "standard") + "|"
                 + Math.Round(cfg.PanelFontSize, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!_isImeComposing && !string.Equals(_appliedResourceKey, resKey, StringComparison.Ordinal))
+            if (!_isImeComposing)
             {
-                GlassControlStyles.ApplyToResources(Resources, pal, scale);
-                _appliedResourceKey = resKey;
+                bool themeChanged = !string.Equals(_appliedThemeKey, themeKey, StringComparison.Ordinal);
+                bool controlStyleChanged = !string.Equals(_appliedControlStyleKey, controlStyleKey, StringComparison.Ordinal);
+                if (themeChanged || controlStyleChanged)
+                {
+                    GlassControlStyles.ApplyToResources(Resources, pal, scale, themeChanged);
+                    _appliedThemeKey = themeKey;
+                    _appliedControlStyleKey = controlStyleKey;
+                }
             }
 
             _outerCard.Background = pal.CardBg;
@@ -1443,8 +1644,16 @@ namespace DesktopMemo
                 _settingsCards[i].Background = pal.SurfaceBg;
                 _settingsCards[i].BorderBrush = pal.Border;
             }
-            for (int i = 0; i < _settingsCardTitles.Count; i++) _settingsCardTitles[i].Foreground = pal.TextPrimary;
-            for (int i = 0; i < _settingsLabels.Count; i++) _settingsLabels[i].Foreground = pal.TextSecondary;
+            for (int i = 0; i < _settingsCardTitles.Count; i++)
+            {
+                _settingsCardTitles[i].Foreground = pal.TextPrimary;
+                _settingsCardTitles[i].FontSize = scale.FontSize + 1;
+            }
+            for (int i = 0; i < _settingsLabels.Count; i++)
+            {
+                _settingsLabels[i].Foreground = pal.TextSecondary;
+                _settingsLabels[i].FontSize = scale.SmallFontSize + 1;
+            }
 
             _undoAiBtn.Visibility = _controller.CanUndoAiSort ? Visibility.Visible : Visibility.Collapsed;
 
@@ -1633,7 +1842,7 @@ namespace DesktopMemo
                 });
             }
 
-            if (!string.IsNullOrEmpty(ddl.Text) || !string.IsNullOrEmpty(task.RemindAtIso) || task.AiScore > 0)
+            if (!string.IsNullOrEmpty(ddl.Text) || !string.IsNullOrEmpty(task.RemindAtIso) || task.AiScore > 0 || (task.AttachmentFiles != null && task.AttachmentFiles.Count > 0))
             {
                 var meta = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
                 if (!string.IsNullOrEmpty(ddl.Text))
@@ -1690,6 +1899,38 @@ namespace DesktopMemo
                             Foreground = ThemeService.BrushFromHex(pal.IsDark ? "#C4B5FD" : "#6D28D9")
                         }
                     });
+                }
+                if (task.AttachmentFiles != null && task.AttachmentFiles.Count > 0)
+                {
+                    var attPaths = new List<string>();
+                    for (int a = 0; a < task.AttachmentFiles.Count; a++)
+                    {
+                        string p = _controller.Storage.GetAttachmentPath(task.AttachmentFiles[a]);
+                        if (!string.IsNullOrEmpty(p)) attPaths.Add(p);
+                    }
+                    var attBadge = new Border
+                    {
+                        Background = pal.HoverBg,
+                        BorderBrush = pal.Border,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(5),
+                        Padding = new Thickness(6, 1, 6, 1),
+                        Margin = new Thickness(0, 0, 5, 2),
+                        Cursor = Cursors.Hand,
+                        ToolTip = "点击预览日程图片附件",
+                        Child = new TextBlock
+                        {
+                            Text = "🖼 " + task.AttachmentFiles.Count,
+                            FontFamily = ThemeService.AppFontFamily,
+                            FontSize = scale.SmallFontSize,
+                            Foreground = pal.TextPrimary
+                        }
+                    };
+                    attBadge.MouseLeftButtonUp += delegate
+                    {
+                        ImageAttachmentHelper.ShowImagePreviewDialog(attPaths, 0, this, _controller.Config.PanelTheme);
+                    };
+                    meta.Children.Add(attBadge);
                 }
                 body.Children.Add(meta);
             }

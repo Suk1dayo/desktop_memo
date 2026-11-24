@@ -10,7 +10,9 @@ restore/
 # 编译产物
 DesktopMemo.exe
 DesktopMemoServer.exe
+DesktopMemoSetup.exe
 *_prev.exe
+obj_installer/
 bin/
 obj/
 *.pdb
@@ -22,4 +24,5 @@ obj/
 .idea/
 Thumbs.db
 desktop.ini
+*.lnk
 *.log

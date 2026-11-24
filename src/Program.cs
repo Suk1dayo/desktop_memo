@@ -20,6 +20,7 @@ namespace DesktopMemo
             Win32Native.EnablePerMonitorDpiAwareness();
 
             string selfTestReportPath = null;
+            string explicitDataDir = null;
             bool runSelfTest = false;
             bool startedFromAutoStart = false;
 
@@ -36,6 +37,10 @@ namespace DesktopMemo
                     {
                         runSelfTest = true;
                         selfTestReportPath = arg.Substring("--self-test=".Length).Trim('"');
+                    }
+                    else if (arg.StartsWith("--data-dir=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        explicitDataDir = arg.Substring("--data-dir=".Length).Trim('"');
                     }
                     else if (arg == "--autostart")
                     {
@@ -66,7 +71,7 @@ namespace DesktopMemo
                     return 0;
                 }
 
-                var storage = new StorageService(null);
+                var storage = new StorageService(null, explicitDataDir);
                 EventWaitHandle wakeupHandle = new EventWaitHandle(false, EventResetMode.AutoReset, WakeupEventName);
                 TrayAndAppController controller = null;
 

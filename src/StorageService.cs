@@ -9,16 +9,24 @@ namespace DesktopMemo
 {
     public class StorageService
     {
+        public const string StoragePathIniName = "storage_path.ini";
+        public const string RegistryConfigKeyPath = @"Software\DesktopMemo";
+
         public string BaseDirectory { get; private set; }
         public string DataDirectory { get; private set; }
         public string BackupsDirectory { get; private set; }
+        public string AttachmentsDirectory { get; private set; }
         public string DataFilePath { get; private set; }
         public string ConfigFilePath { get; private set; }
         public string ErrorLogPath { get; private set; }
 
         private readonly object _fileLock = new object();
 
-        public StorageService(string customBaseDirectory)
+        public StorageService(string customBaseDirectory) : this(customBaseDirectory, null)
+        {
+        }
+
+        public StorageService(string customBaseDirectory, string explicitDataDirectory)
         {
             if (!string.IsNullOrWhiteSpace(customBaseDirectory))
             {
@@ -29,13 +37,80 @@ namespace DesktopMemo
                 BaseDirectory = AppDomain.CurrentDomain.BaseDirectory;
             }
 
-            DataDirectory = Path.Combine(BaseDirectory, "data");
+            DataDirectory = ResolveDataDirectory(customBaseDirectory, explicitDataDirectory);
             BackupsDirectory = Path.Combine(DataDirectory, "backups");
+            AttachmentsDirectory = Path.Combine(DataDirectory, "attachments");
             DataFilePath = Path.Combine(DataDirectory, "data.json");
             ConfigFilePath = Path.Combine(DataDirectory, "config.json");
             ErrorLogPath = Path.Combine(DataDirectory, "error.log");
 
             EnsureDirectories();
+        }
+
+        public static string ResolveDataDirectory(string customBaseDirectory, string explicitDataDirectory)
+        {
+            if (!string.IsNullOrWhiteSpace(explicitDataDirectory))
+            {
+                return Path.GetFullPath(explicitDataDirectory.Trim().Trim('"'));
+            }
+            if (!string.IsNullOrWhiteSpace(customBaseDirectory))
+            {
+                return Path.Combine(customBaseDirectory.Trim().Trim('"'), "data");
+            }
+
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            try
+            {
+                string iniPath = Path.Combine(exeDir, StoragePathIniName);
+                if (File.Exists(iniPath))
+                {
+                    string[] lines = File.ReadAllLines(iniPath, new UTF8Encoding(false));
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        string line = (lines[i] ?? "").Trim();
+                        if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
+                        if (line.StartsWith("DataDir=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string val = line.Substring("DataDir=".Length).Trim().Trim('"');
+                            if (!string.IsNullOrWhiteSpace(val))
+                            {
+                                return Path.IsPathRooted(val)
+                                    ? Path.GetFullPath(val)
+                                    : Path.GetFullPath(Path.Combine(exeDir, val));
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            string defaultLocalData = Path.Combine(exeDir, "data");
+            bool hasPortableLocal = File.Exists(Path.Combine(defaultLocalData, "data.json"))
+                || File.Exists(Path.Combine(defaultLocalData, "config.json"));
+            if (!hasPortableLocal)
+            {
+                try
+                {
+                    using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RegistryConfigKeyPath, false))
+                    {
+                        if (key != null)
+                        {
+                            object val = key.GetValue("DataDir");
+                            if (val != null)
+                            {
+                                string regDir = val.ToString().Trim().Trim('"');
+                                if (!string.IsNullOrWhiteSpace(regDir))
+                                {
+                                    return Path.GetFullPath(regDir);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return defaultLocalData;
         }
 
         public void EnsureDirectories()
@@ -47,6 +122,10 @@ namespace DesktopMemo
             if (!Directory.Exists(BackupsDirectory))
             {
                 Directory.CreateDirectory(BackupsDirectory);
+            }
+            if (!Directory.Exists(AttachmentsDirectory))
+            {
+                Directory.CreateDirectory(AttachmentsDirectory);
             }
         }
 
@@ -87,6 +166,23 @@ namespace DesktopMemo
                         if (t.Notes == null) t.Notes = "";
                         if (t.AiReason == null) t.AiReason = "";
                         if (t.NoteId == null) t.NoteId = "";
+                        if (t.AttachmentFiles == null)
+                        {
+                            t.AttachmentFiles = new List<string>();
+                        }
+                        else
+                        {
+                            var cleanedAtt = new List<string>();
+                            for (int j = 0; j < t.AttachmentFiles.Count; j++)
+                            {
+                                string safeAtt = SanitizeAttachmentFileName(t.AttachmentFiles[j]);
+                                if (!string.IsNullOrEmpty(safeAtt) && !cleanedAtt.Contains(safeAtt))
+                                {
+                                    cleanedAtt.Add(safeAtt);
+                                }
+                            }
+                            t.AttachmentFiles = cleanedAtt;
+                        }
                     }
                     for (int i = 0; i < data.StickyNotes.Count; i++)
                     {
@@ -267,15 +363,93 @@ namespace DesktopMemo
             if (cfg.PanelPinMode != "desktop" && cfg.PanelPinMode != "topmost" && cfg.PanelPinMode != "normal")
                 cfg.PanelPinMode = "desktop";
             if (string.IsNullOrEmpty(cfg.SortBy)) cfg.SortBy = "ai";
-            if (string.IsNullOrEmpty(cfg.AiProviderPreset)) cfg.AiProviderPreset = "deepseek";
+            if (string.IsNullOrEmpty(cfg.AiProviderPreset)) cfg.AiProviderPreset = "deepseek_flash";
             if (string.IsNullOrEmpty(cfg.AiBaseUrl)) cfg.AiBaseUrl = "https://api.deepseek.com/v1";
-            if (string.IsNullOrEmpty(cfg.AiModel)) cfg.AiModel = "deepseek-chat";
+            if (string.IsNullOrEmpty(cfg.AiModel)) cfg.AiModel = "deepseek-flash";
             if (cfg.AiApiKey == null) cfg.AiApiKey = "";
             if (cfg.AiCustomInstruction == null) cfg.AiCustomInstruction = "";
+            if (cfg.WeChatExportExePath == null) cfg.WeChatExportExePath = "";
+            if (cfg.WeChatExportOutputDir == null) cfg.WeChatExportOutputDir = "";
             if (cfg.ServerPort < 1024 || cfg.ServerPort > 65535) cfg.ServerPort = 8765;
             if (cfg.ServerPassword == null) cfg.ServerPassword = "";
             if (cfg.RemoteServerUrl == null) cfg.RemoteServerUrl = "";
             if (cfg.RemoteServerPassword == null) cfg.RemoteServerPassword = "";
+        }
+
+        public static string SanitizeAttachmentFileName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "";
+            string fileOnly = Path.GetFileName(name.Trim());
+            if (string.IsNullOrWhiteSpace(fileOnly) || fileOnly.IndexOf("..", StringComparison.Ordinal) >= 0) return "";
+            char[] bad = Path.GetInvalidFileNameChars();
+            for (int i = 0; i < bad.Length; i++)
+            {
+                if (fileOnly.IndexOf(bad[i]) >= 0) return "";
+            }
+            return fileOnly;
+        }
+
+        public string GetAttachmentPath(string fileName)
+        {
+            string safe = SanitizeAttachmentFileName(fileName);
+            if (string.IsNullOrEmpty(safe)) return "";
+            return Path.Combine(AttachmentsDirectory, safe);
+        }
+
+        public bool AttachmentExists(string fileName)
+        {
+            string p = GetAttachmentPath(fileName);
+            return !string.IsNullOrEmpty(p) && File.Exists(p);
+        }
+
+        public byte[] ReadAttachmentBytes(string fileName)
+        {
+            string p = GetAttachmentPath(fileName);
+            if (string.IsNullOrEmpty(p) || !File.Exists(p)) return null;
+            lock (_fileLock)
+            {
+                try { return File.ReadAllBytes(p); }
+                catch { return null; }
+            }
+        }
+
+        public string SaveAttachmentBytes(byte[] bytes, string preferredExt)
+        {
+            if (bytes == null || bytes.Length == 0) return "";
+            string ext = string.IsNullOrWhiteSpace(preferredExt) ? ".jpg" : preferredExt.Trim().ToLowerInvariant();
+            if (!ext.StartsWith(".")) ext = "." + ext;
+            if (ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".gif" && ext != ".webp") ext = ".jpg";
+            string name = "att_" + DateTime.Now.ToString("yyyyMMddHHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ext;
+            return SaveAttachmentWithExactName(name, bytes);
+        }
+
+        public string SaveAttachmentWithExactName(string fileName, byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0) return "";
+            string safe = SanitizeAttachmentFileName(fileName);
+            if (string.IsNullOrEmpty(safe)) return SaveAttachmentBytes(bytes, ".jpg");
+            lock (_fileLock)
+            {
+                EnsureDirectories();
+                string dest = Path.Combine(AttachmentsDirectory, safe);
+                WriteAllBytesAtomic(dest, bytes);
+                return safe;
+            }
+        }
+
+        private static void WriteAllBytesAtomic(string path, byte[] bytes)
+        {
+            string tmp = path + ".tmp";
+            File.WriteAllBytes(tmp, bytes);
+            if (File.Exists(path))
+            {
+                File.Copy(tmp, path, true);
+                File.Delete(tmp);
+            }
+            else
+            {
+                File.Move(tmp, path);
+            }
         }
 
         private static JavaScriptSerializer CreateSerializer()

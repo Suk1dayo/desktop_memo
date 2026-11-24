@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
 
 namespace DesktopMemo
 {
@@ -16,6 +19,7 @@ namespace DesktopMemo
         private readonly List<StickyNote> _notes;
         private readonly ThemePalette _pal;
         private readonly UiScaleMetrics _scale;
+        private readonly StorageService _storage;
 
         private Border _outer;
         private TextBox _titleBox;
@@ -33,25 +37,43 @@ namespace DesktopMemo
         private ComboBox _remMinBox;
 
         private ComboBox _noteLinkBox;
+        private WrapPanel _attWrapPanel;
+        private TextBlock _attEmptyHint;
         private TextBlock _errorText;
+
+        private readonly List<AttachmentDraft> _attachmentDrafts = new List<AttachmentDraft>();
+
+        private class AttachmentDraft
+        {
+            public string SavedFileName;
+            public byte[] NewBytes;
+            public string Label;
+            public BitmapImage Thumb;
+        }
 
         public bool DeleteRequested { get; private set; }
 
         public TaskEditDialog(MemoTask task, bool isNew, List<StickyNote> stickyNotes)
-            : this(task, isNew, stickyNotes, "frost_glass", "standard", 13)
+            : this(task, isNew, stickyNotes, "claude_warm", "standard", 13, null)
         {
         }
 
         public TaskEditDialog(MemoTask task, bool isNew, List<StickyNote> stickyNotes, string themeKey, string uiScale, double fontSize)
+            : this(task, isNew, stickyNotes, themeKey, uiScale, fontSize, null)
+        {
+        }
+
+        public TaskEditDialog(MemoTask task, bool isNew, List<StickyNote> stickyNotes, string themeKey, string uiScale, double fontSize, StorageService storage)
         {
             _task = task ?? new MemoTask();
             _isNew = isNew;
             _notes = stickyNotes ?? new List<StickyNote>();
+            _storage = storage;
             _pal = ThemeService.GetPalette(themeKey, 0.97);
             _scale = ThemeService.GetScaleMetrics(uiScale, fontSize);
 
             Title = isNew ? "新建日程 / 待办" : "编辑日程 / 待办";
-            Width = 540;
+            Width = 560;
             SizeToContent = SizeToContent.Height;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             WindowStyle = WindowStyle.None;
@@ -59,6 +81,11 @@ namespace DesktopMemo
             Background = Brushes.Transparent;
             ResizeMode = ResizeMode.NoResize;
             ShowInTaskbar = true;
+            AllowDrop = true;
+
+            PreviewDragOver += OnPreviewDragOver;
+            Drop += OnFilesDropped;
+            PreviewKeyDown += OnDialogPreviewKeyDown;
 
             GlassControlStyles.ApplyToResources(Resources, _pal, _scale);
             BuildUi();
@@ -298,6 +325,49 @@ namespace DesktopMemo
             linkRow.Children.Add(_noteLinkBox);
             body.Children.Add(linkRow);
 
+            var attCard = new Border
+            {
+                Background = _pal.SurfaceBg,
+                BorderBrush = _pal.Border,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            var attStack = new StackPanel();
+            var attHead = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            var attTitle = MakeSectionLabel("🖼 图片附件（支持拖拽图片或 Ctrl+V 粘贴截图）");
+            attTitle.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(attTitle, Dock.Left);
+            attHead.Children.Add(attTitle);
+
+            var attBtns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var addAttBtn = GlassControlStyles.CreateGlassButton("+ 添加图片",
+                _pal.HoverBg, _pal.TextPrimary, _pal.Border, _scale.SmallFontSize, _scale.SmallButtonPadding, 7);
+            addAttBtn.Margin = new Thickness(0, 0, 6, 0);
+            addAttBtn.Click += OnAddAttachmentClicked;
+            var pasteAttBtn = GlassControlStyles.CreateGlassButton("📋 粘贴截图",
+                _pal.HoverBg, _pal.TextPrimary, _pal.Border, _scale.SmallFontSize, _scale.SmallButtonPadding, 7);
+            pasteAttBtn.Click += delegate { TryAddClipboardImage(); };
+            attBtns.Children.Add(addAttBtn);
+            attBtns.Children.Add(pasteAttBtn);
+            attHead.Children.Add(attBtns);
+            attStack.Children.Add(attHead);
+
+            _attEmptyHint = new TextBlock
+            {
+                Text = "暂无图片附件（点击右上按钮添加，或直接截图后按 Ctrl+V 粘贴）",
+                FontFamily = ThemeService.AppFontFamily,
+                FontSize = _scale.SmallFontSize,
+                Foreground = _pal.TextSecondary
+            };
+            attStack.Children.Add(_attEmptyHint);
+
+            _attWrapPanel = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
+            attStack.Children.Add(_attWrapPanel);
+            attCard.Child = attStack;
+            body.Children.Add(attCard);
+
             _errorText = new TextBlock
             {
                 FontFamily = ThemeService.AppFontFamily,
@@ -342,7 +412,13 @@ namespace DesktopMemo
             footer.Children.Add(rightBtns);
             body.Children.Add(footer);
 
-            rootStack.Children.Add(body);
+            rootStack.Children.Add(new ScrollViewer
+            {
+                MaxHeight = 610,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = body
+            });
             _outer.Child = rootStack;
             Content = _outer;
 
@@ -402,6 +478,32 @@ namespace DesktopMemo
                     }
                 }
             }
+
+            _attachmentDrafts.Clear();
+            if (_task.AttachmentFiles != null)
+            {
+                for (int i = 0; i < _task.AttachmentFiles.Count; i++)
+                {
+                    string fname = _task.AttachmentFiles[i];
+                    if (string.IsNullOrWhiteSpace(fname)) continue;
+                    BitmapImage thumb = null;
+                    if (_storage != null)
+                    {
+                        string p = _storage.GetAttachmentPath(fname);
+                        if (!string.IsNullOrEmpty(p) && File.Exists(p))
+                        {
+                            thumb = ImageAttachmentHelper.LoadThumbnail(p, 150);
+                        }
+                    }
+                    _attachmentDrafts.Add(new AttachmentDraft
+                    {
+                        SavedFileName = fname,
+                        Label = fname,
+                        Thumb = thumb
+                    });
+                }
+            }
+            RenderAttachmentDrafts();
         }
 
         private void TrySaveAndClose()
@@ -456,8 +558,230 @@ namespace DesktopMemo
             var selectedNote = _noteLinkBox.SelectedItem as ComboBoxItem;
             _task.NoteId = selectedNote != null && selectedNote.Tag != null ? selectedNote.Tag.ToString() : "";
 
+            var finalFiles = new List<string>();
+            for (int i = 0; i < _attachmentDrafts.Count; i++)
+            {
+                AttachmentDraft draft = _attachmentDrafts[i];
+                if (!string.IsNullOrEmpty(draft.SavedFileName))
+                {
+                    if (!finalFiles.Contains(draft.SavedFileName)) finalFiles.Add(draft.SavedFileName);
+                }
+                else if (draft.NewBytes != null && _storage != null)
+                {
+                    string ext = ImageAttachmentHelper.DetectFileExtension(draft.NewBytes);
+                    string saved = _storage.SaveAttachmentBytes(draft.NewBytes, ext);
+                    if (!string.IsNullOrEmpty(saved) && !finalFiles.Contains(saved)) finalFiles.Add(saved);
+                }
+            }
+            _task.AttachmentFiles = finalFiles;
+
             DialogResult = true;
             Close();
+        }
+
+        private void OnDialogPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                if (TryAddClipboardImage())
+                {
+                    e.Handled = true;
+                }
+            }
+        }
+
+        private bool TryAddClipboardImage()
+        {
+            try
+            {
+                if (Clipboard.ContainsImage())
+                {
+                    BitmapSource src = Clipboard.GetImage();
+                    byte[] jpg = ImageAttachmentHelper.CompressBitmapSourceToJpeg(src, 1600, 85);
+                    if (jpg != null)
+                    {
+                        AddNewAttachmentBytes(jpg, "剪贴板截图");
+                        return true;
+                    }
+                }
+                else if (Clipboard.ContainsFileDropList())
+                {
+                    StringCollection files = Clipboard.GetFileDropList();
+                    bool any = false;
+                    for (int i = 0; i < files.Count; i++)
+                    {
+                        if (ImageAttachmentHelper.IsSupportedImageExtension(files[i]))
+                        {
+                            AddNewAttachmentFile(files[i]);
+                            any = true;
+                        }
+                    }
+                    return any;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private void OnPreviewDragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = DragDropEffects.Copy;
+                e.Handled = true;
+            }
+        }
+
+        private void OnFilesDropped(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            string[] paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (paths == null) return;
+            for (int i = 0; i < paths.Length; i++)
+            {
+                if (ImageAttachmentHelper.IsSupportedImageExtension(paths[i]))
+                {
+                    AddNewAttachmentFile(paths[i]);
+                }
+            }
+        }
+
+        private void OnAddAttachmentClicked(object sender, RoutedEventArgs e)
+        {
+            var ofd = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "选择日程图片附件",
+                Filter = "图片文件|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp",
+                Multiselect = true
+            };
+            if (ofd.ShowDialog(this) == true)
+            {
+                for (int i = 0; i < ofd.FileNames.Length; i++)
+                {
+                    AddNewAttachmentFile(ofd.FileNames[i]);
+                }
+            }
+        }
+
+        private void AddNewAttachmentFile(string path)
+        {
+            byte[] compressed = ImageAttachmentHelper.CompressImageFileToJpeg(path, 1600, 85);
+            if (compressed == null) return;
+            AddNewAttachmentBytes(compressed, Path.GetFileName(path));
+        }
+
+        private void AddNewAttachmentBytes(byte[] bytes, string label)
+        {
+            if (bytes == null || bytes.Length == 0) return;
+            _attachmentDrafts.Add(new AttachmentDraft
+            {
+                NewBytes = bytes,
+                Label = label,
+                Thumb = ImageAttachmentHelper.LoadThumbnailFromBytes(bytes, 150)
+            });
+            RenderAttachmentDrafts();
+        }
+
+        private void RenderAttachmentDrafts()
+        {
+            _attWrapPanel.Children.Clear();
+            _attEmptyHint.Visibility = _attachmentDrafts.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            for (int i = 0; i < _attachmentDrafts.Count; i++)
+            {
+                int index = i;
+                AttachmentDraft draft = _attachmentDrafts[i];
+                var card = new Border
+                {
+                    Width = 78,
+                    Height = 58,
+                    Margin = new Thickness(0, 2, 8, 4),
+                    CornerRadius = new CornerRadius(7),
+                    BorderBrush = _pal.Border,
+                    BorderThickness = new Thickness(1),
+                    Background = _pal.CardBg,
+                    ClipToBounds = true,
+                    ToolTip = draft.Label + "（点击预览）"
+                };
+
+                var g = new Grid();
+                if (draft.Thumb != null)
+                {
+                    var imgCtrl = new Image
+                    {
+                        Source = draft.Thumb,
+                        Stretch = Stretch.UniformToFill,
+                        Cursor = Cursors.Hand
+                    };
+                    imgCtrl.MouseLeftButtonUp += delegate { PreviewDraftAttachment(index); };
+                    g.Children.Add(imgCtrl);
+                }
+                else
+                {
+                    var ph = new TextBlock
+                    {
+                        Text = "🖼\n待同步",
+                        FontFamily = ThemeService.AppFontFamily,
+                        FontSize = 10,
+                        Foreground = _pal.TextSecondary,
+                        TextAlignment = TextAlignment.Center,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    g.Children.Add(ph);
+                }
+
+                var delBtn = GlassControlStyles.CreateGlassButton("✕",
+                    ThemeService.BrushFromHexAlpha("#111827", 190), Brushes.White, null, 10, new Thickness(4, 0, 4, 0), 5);
+                delBtn.HorizontalAlignment = HorizontalAlignment.Right;
+                delBtn.VerticalAlignment = VerticalAlignment.Top;
+                delBtn.Margin = new Thickness(2);
+                delBtn.Click += delegate
+                {
+                    _attachmentDrafts.RemoveAt(index);
+                    RenderAttachmentDrafts();
+                };
+                g.Children.Add(delBtn);
+
+                card.Child = g;
+                _attWrapPanel.Children.Add(card);
+            }
+        }
+
+        private void PreviewDraftAttachment(int index)
+        {
+            var tempFiles = new List<string>();
+            var paths = new List<string>();
+            try
+            {
+                for (int i = 0; i < _attachmentDrafts.Count; i++)
+                {
+                    AttachmentDraft d = _attachmentDrafts[i];
+                    if (!string.IsNullOrEmpty(d.SavedFileName) && _storage != null)
+                    {
+                        string p = _storage.GetAttachmentPath(d.SavedFileName);
+                        if (!string.IsNullOrEmpty(p) && File.Exists(p)) paths.Add(p);
+                    }
+                    else if (d.NewBytes != null)
+                    {
+                        string tmp = Path.Combine(Path.GetTempPath(), "dm_att_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ImageAttachmentHelper.DetectFileExtension(d.NewBytes));
+                        File.WriteAllBytes(tmp, d.NewBytes);
+                        tempFiles.Add(tmp);
+                        paths.Add(tmp);
+                    }
+                }
+                if (paths.Count > 0)
+                {
+                    ImageAttachmentHelper.ShowImagePreviewDialog(paths, Math.Min(index, paths.Count - 1), this, "claude_warm");
+                }
+            }
+            finally
+            {
+                for (int i = 0; i < tempFiles.Count; i++)
+                {
+                    try { File.Delete(tempFiles[i]); } catch { }
+                }
+            }
         }
 
         private void ToggleDdlInputs(bool enabled)

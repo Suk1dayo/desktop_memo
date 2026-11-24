@@ -19,7 +19,8 @@ namespace DesktopMemo
         private bool _isInitializing = true;
         private bool _isAdjustingZ = false;
         private bool _suppressTextSync = false;
-        private string _appliedResourceKey;
+        private string _appliedThemeKey;
+        private string _appliedControlStyleKey;
         private string _appliedPinMode;
         private bool _isImeComposing = false;
 
@@ -34,6 +35,7 @@ namespace DesktopMemo
         private Button _pinBtn;
         private Button _lockBtn;
         private Button _settingsBtn;
+        private Button _hideBtn;
         private Popup _settingsPopup;
         private Grid _bodyGrid;
         private TextBox _scratchpadBox;
@@ -56,10 +58,10 @@ namespace DesktopMemo
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
-            ResizeMode = ResizeMode.NoResize;
+            ResizeMode = ResizeMode.CanResize;
             ShowInTaskbar = false;
             MinWidth = 240;
-            MinHeight = 160;
+            MinHeight = 180;
 
             double left = note.Left;
             double top = note.Top;
@@ -108,7 +110,7 @@ namespace DesktopMemo
         {
             return Win32Native.HandleDesktopAndResizeMessages(
                 this, hwnd, msg, wParam, lParam,
-                _note.PinMode, _note.Locked, false, _isAdjustingZ, ref handled);
+                _note.PinMode, _note.Locked, false, _isAdjustingZ, 8.0, ref handled);
         }
 
         public void RebindNote(StickyNote note)
@@ -168,7 +170,7 @@ namespace DesktopMemo
         {
             _outerCard = new Border
             {
-                Margin = new Thickness(8),
+                Margin = new Thickness(0),
                 CornerRadius = new CornerRadius(13),
                 BorderThickness = new Thickness(1),
                 Effect = new DropShadowEffect
@@ -265,10 +267,14 @@ namespace DesktopMemo
             _settingsBtn = MakeHeaderButton("⚙", "配色、透明度、显示随手记区与设置");
             _settingsBtn.Click += delegate { OpenSettingsPopup(); };
 
+            _hideBtn = MakeHeaderButton("—", "隐藏此便签（可在主面板「独立便利贴」或系统托盘重新显示）");
+            _hideBtn.Click += delegate { _controller.SetStickyNoteVisible(_note.Id, false); };
+
             btnRow.Children.Add(_chatExtractBtn);
             btnRow.Children.Add(_pinBtn);
             btnRow.Children.Add(_lockBtn);
             btnRow.Children.Add(_settingsBtn);
+            btnRow.Children.Add(_hideBtn);
             Grid.SetColumn(btnRow, 2);
             headerGrid.Children.Add(btnRow);
 
@@ -391,7 +397,14 @@ namespace DesktopMemo
 
             rootDock.Children.Add(_bodyGrid);
             _outerCard.Child = rootDock;
-            Content = _outerCard;
+            Content = new Border
+            {
+                Margin = new Thickness(5),
+                Padding = new Thickness(3),
+                CornerRadius = new CornerRadius(15),
+                Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)),
+                Child = _outerCard
+            };
         }
 
         private void AddQuickTaskFromNote()
@@ -441,14 +454,20 @@ namespace DesktopMemo
             double effectiveFont = _note.FontSize;
             UiScaleMetrics scale = ThemeService.GetScaleMetrics(_controller.Config.UiScale, effectiveFont);
 
-            string resKey = ThemeService.NormalizeThemeKey(_note.Theme) + "|"
-                + Math.Round(_note.Opacity, 2).ToString(System.Globalization.CultureInfo.InvariantCulture) + "|"
+            string themeKey = ThemeService.NormalizeThemeKey(_note.Theme);
+            string controlStyleKey = themeKey + "|"
                 + (_controller.Config.UiScale ?? "standard") + "|"
                 + Math.Round(effectiveFont, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!_isImeComposing && !string.Equals(_appliedResourceKey, resKey, StringComparison.Ordinal))
+            if (!_isImeComposing)
             {
-                GlassControlStyles.ApplyToResources(Resources, pal, scale);
-                _appliedResourceKey = resKey;
+                bool themeChanged = !string.Equals(_appliedThemeKey, themeKey, StringComparison.Ordinal);
+                bool controlStyleChanged = !string.Equals(_appliedControlStyleKey, controlStyleKey, StringComparison.Ordinal);
+                if (themeChanged || controlStyleChanged)
+                {
+                    GlassControlStyles.ApplyToResources(Resources, pal, scale, themeChanged);
+                    _appliedThemeKey = themeKey;
+                    _appliedControlStyleKey = controlStyleKey;
+                }
             }
 
             _outerCard.Background = pal.CardBg;
@@ -497,6 +516,7 @@ namespace DesktopMemo
             _pinBtn.Foreground = pal.TextPrimary;
             _lockBtn.Foreground = pal.TextPrimary;
             _settingsBtn.Foreground = pal.TextPrimary;
+            if (_hideBtn != null) _hideBtn.Foreground = pal.TextPrimary;
 
             UpdatePinAndLockButtons();
             RefreshTasksOnly();
@@ -609,7 +629,7 @@ namespace DesktopMemo
             titleLine.Children.Add(titleTb);
             textStack.Children.Add(titleLine);
 
-            if (!string.IsNullOrEmpty(ddl.Text) || !string.IsNullOrEmpty(task.RemindAtIso) || task.AiScore > 0 || task.Quadrant == 0)
+            if (!string.IsNullOrEmpty(ddl.Text) || !string.IsNullOrEmpty(task.RemindAtIso) || task.AiScore > 0 || task.Quadrant == 0 || (task.AttachmentFiles != null && task.AttachmentFiles.Count > 0))
             {
                 var metaWrap = new WrapPanel { Margin = new Thickness(14, 3, 0, 0) };
                 if (task.Quadrant == 0)
@@ -681,6 +701,38 @@ namespace DesktopMemo
                             Foreground = ThemeService.BrushFromHex(pal.IsDark ? "#C4B5FD" : "#6D28D9")
                         }
                     });
+                }
+                if (task.AttachmentFiles != null && task.AttachmentFiles.Count > 0)
+                {
+                    var attPaths = new List<string>();
+                    for (int a = 0; a < task.AttachmentFiles.Count; a++)
+                    {
+                        string p = _controller.Storage.GetAttachmentPath(task.AttachmentFiles[a]);
+                        if (!string.IsNullOrEmpty(p)) attPaths.Add(p);
+                    }
+                    var attPill = new Border
+                    {
+                        Background = pal.HoverBg,
+                        BorderBrush = pal.Border,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(4),
+                        Padding = new Thickness(5, 1, 5, 1),
+                        Margin = new Thickness(0, 0, 4, 2),
+                        Cursor = Cursors.Hand,
+                        ToolTip = "点击预览图片附件",
+                        Child = new TextBlock
+                        {
+                            Text = "🖼 " + task.AttachmentFiles.Count,
+                            FontSize = scale.SmallFontSize - 0.5,
+                            FontFamily = ThemeService.AppFontFamily,
+                            Foreground = pal.TextPrimary
+                        }
+                    };
+                    attPill.MouseLeftButtonUp += delegate
+                    {
+                        ImageAttachmentHelper.ShowImagePreviewDialog(attPaths, 0, this, _note.Theme);
+                    };
+                    metaWrap.Children.Add(attPill);
                 }
                 textStack.Children.Add(metaWrap);
             }
@@ -792,12 +844,28 @@ namespace DesktopMemo
                 Value = _note.Opacity,
                 Margin = new Thickness(0, 2, 0, 10)
             };
+            bool draggingOp = false;
+            opSlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler(delegate
+            {
+                draggingOp = true;
+            }));
+            opSlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(delegate
+            {
+                draggingOp = false;
+                RefreshTasksOnly();
+            }));
             opSlider.ValueChanged += delegate
             {
                 _note.Opacity = opSlider.Value;
                 glassSliderLbl.Text = string.Format("窗口不透明度 ({0}%)", (int)Math.Round(_note.Opacity * 100));
-                ApplyThemeAndContent();
+                ThemePalette livePal = ThemeService.GetPalette(_note.Theme, _note.Opacity);
+                _outerCard.Background = livePal.CardBg;
+                _headerBar.Background = livePal.HeaderBg;
                 _controller.ScheduleSave();
+                if (!draggingOp)
+                {
+                    RefreshTasksOnly();
+                }
             };
             stack.Children.Add(opSlider);
 
@@ -871,11 +939,6 @@ namespace DesktopMemo
             dashBtn.Margin = new Thickness(0, 0, 0, 6);
             dashBtn.Click += delegate { _settingsPopup.IsOpen = false; _controller.ShowDashboardWindow(); };
             stack.Children.Add(dashBtn);
-
-            var hideBtn = GlassControlStyles.CreateGlassButton("隐藏此便签", pal.SurfaceBg, pal.TextPrimary, pal.Border, 12, new Thickness(8, 5, 8, 5), 8);
-            hideBtn.Margin = new Thickness(0, 0, 0, 6);
-            hideBtn.Click += delegate { _settingsPopup.IsOpen = false; _controller.SetStickyNoteVisible(_note.Id, false); };
-            stack.Children.Add(hideBtn);
 
             var delBtn = GlassControlStyles.CreateGlassButton("删除此便签",
                 ThemeService.BrushFromHex("#FEE2E2"), ThemeService.BrushFromHex("#DC2626"), ThemeService.BrushFromHex("#FCA5A5"),

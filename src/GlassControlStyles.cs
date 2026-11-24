@@ -56,6 +56,11 @@ namespace DesktopMemo
 
         public static void ApplyToResources(ResourceDictionary res, ThemePalette pal, UiScaleMetrics scale)
         {
+            ApplyToResources(res, pal, scale, true);
+        }
+
+        public static void ApplyToResources(ResourceDictionary res, ThemePalette pal, UiScaleMetrics scale, bool includeSliderAndScrollBar)
+        {
             if (res == null || pal == null) return;
             if (scale == null) scale = ThemeService.GetScaleMetrics("standard", 13);
 
@@ -64,8 +69,14 @@ namespace DesktopMemo
             res[typeof(ComboBox)] = BuildComboBoxStyle(pal, scale);
             res[typeof(ComboBoxItem)] = BuildComboBoxItemStyle(pal, scale);
             res[typeof(CheckBox)] = BuildCheckBoxStyle(pal, scale);
-            res[typeof(Slider)] = BuildSliderStyle(pal);
-            res[typeof(ScrollBar)] = BuildScrollBarStyle(pal);
+            if (includeSliderAndScrollBar || !res.Contains(typeof(Slider)))
+            {
+                res[typeof(Slider)] = BuildSliderStyle(pal);
+            }
+            if (includeSliderAndScrollBar || !res.Contains(typeof(ScrollBar)))
+            {
+                res[typeof(ScrollBar)] = BuildScrollBarStyle(pal);
+            }
             res[typeof(DatePicker)] = BuildDatePickerStyle(pal, scale);
         }
 

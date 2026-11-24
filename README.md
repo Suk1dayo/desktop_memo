@@ -12,28 +12,34 @@
 
 ## 下载
 
-不想编译？直接取预构建版本：见本仓库右侧 **Releases** 页面的 `v2.02`。
+不想编译？直接取预构建版本：见本仓库右侧 **Releases** 页面的 `v2.05`。
 
 | 文件 | 说明 |
 | --- | --- |
-| `DesktopMemo.exe` | 桌面端，双击即用 |
+| `DesktopMemoSetup.exe` | **推荐** Claude 暖杏极简风格图形化安装包（支持分别选择安装目录与配置目录，默认勾选桌面快捷方式） |
+| `DesktopMemo.exe` | 便携绿色版桌面端，双击即用 |
 | `DesktopMemoServer.exe` | 网页后端，需与 `web/`、`data/` 同目录运行 |
 
 ---
 
-## 功能亮点 (v2.02)
+## 功能亮点 (v2.05)
 
-### 极简扁平编辑风 + 丝滑弹簧动效
-- 内置 6 套高质感克制扁平主题：**Claude 暖杏极简**（默认）、**Notion 纯净白**、**Linear 深空暗黑**、**Nord 静谧灰蓝**、**青岚护眼浅绿**、**莫兰迪暖灰粉**，支持 60%–100% 窗口不透明度调节。
+### 极简扁平编辑风 + 丝滑交互动效
+- 内置 6 套高质感克制扁平主题：**Claude 暖杏极简**（默认）、**Notion 纯净白**、**Linear 深空暗黑**、**Nord 静谧灰蓝**、**青岚护眼浅绿**、**莫兰迪暖灰粉**，支持 60%–100% 窗口不透明度调节（大面板滑块拖动零重建流畅调节）。
 - 顶部采用手机桌面式悬浮分段胶囊导航，页面切换、胶囊滑移与按钮交互均配有阻尼弹簧物理动效。
 
 ### 全局尺度与极简交互
-- 在「**AI 与设置**」中可自由切换按钮与界面尺度（`紧凑 S` / `标准 M` / `大按钮 L`）、全局字号与不透明度。
+- 在「**AI 与设置**」中可自由切换按钮与界面尺度（`紧凑 S` / `标准 M` / `大按钮 L`）、全局字号与不透明度，支持一键创建桌面快捷方式。
 - 独立便签中新建的任务默认保持「**未分类**」，不会强行塞入 Q2；仅在你主动点击 **AI 智能排序** 或手动选择时才归入四象限。
-- 独立便签右上角 `⚙` 可自由开关「上方随手记文字区」；「独立便利贴」页中的锁定按钮仅锁定便签，不再误锁大面板。
+- 独立便签右上角一级标题栏提供一键 `—` 隐藏按钮；`⚙` 菜单支持开关「上方随手记文字区」；「独立便利贴」页中的锁定按钮仅锁定便签，不再误锁大面板。
 
-### 微信聊天 / 通知 AI 智能提取
-- 大面板和每张小便签右上角均提供 `💬` 提取入口：粘贴一段微信群通知、作业要求或会议分工，AI 自动拆解任务、推算 DDL 和四象限，经你预览勾选确认后再写入。
+### 截图 AI 智能识图、聊天导出导入与图片附件
+- 大面板和每张小便签右上角均提供 `💬` 提取入口：支持粘贴聊天文本、`Ctrl+V` 贴截图 / 拖拽图片（直接调用 `deepseek-flash` 多模态识图提取待办与 DDL），也支持导入通用聊天记录导出目录或 `.md` / `.jsonl` / `.txt` 文件与配图。
+- 新建/编辑日程与任务卡片全面支持**图片附件**（上传、拖拽、剪贴板粘贴、全屏大图预览与远程双向附件同步）。
+
+### 原生自由缩放 & 路径解耦安装包
+- 主窗口与独立便签支持 Windows 原生四边与四角拖拽放大缩小，自动保存窗口尺寸。
+- 提供单文件图形化安装包 `DesktopMemoSetup.exe`（通过 `build_installer.bat` 构建），支持自选程序安装路径与独立配置存储路径，覆盖升级时完整保留原有 `data.json` / `config.json`。
 
 ### 四象限任务管理
 - 重要 / 紧急四象限视图、独立便签悬浮窗、DDL 倒计时、桌面提醒弹窗与提示音。
@@ -81,14 +87,17 @@ powershell -ExecutionPolicy Bypass -File .\setup_windows_server.ps1 -Port 8765 -
 
 ```bat
 build.bat
+# 如需同时打入桌面端+服务端+网页端并生成图形化安装包：
+build_installer.bat
 ```
 
-脚本会同时产出：
+脚本会产出：
 
 | 产物 | 说明 |
 | --- | --- |
 | `DesktopMemo.exe` | WPF 桌面端（`/target:winexe`） |
 | `DesktopMemoServer.exe` | 网页后端（`/target:exe`，复用 `Models.cs` / `StorageService.cs` / `AiSortService.cs`） |
+| `DesktopMemoSetup.exe` | 图形化安装包 & 卸载器（由 `build_installer.bat` 构建） |
 
 ---
 
@@ -100,24 +109,28 @@ desktop_memo/
 │   ├── Program.cs              # 入口
 │   ├── DashboardWindow.cs      # 大面板主界面
 │   ├── StickyNoteWindow.cs     # 独立便签窗口
-│   ├── TaskEditDialog.cs       # 任务编辑弹窗
-│   ├── ChatExtractDialog.cs    # 聊天记录 AI 提取弹窗
-│   ├── TrayAndAppController.cs # 托盘、热键、窗口调度
+│   ├── TaskEditDialog.cs       # 任务编辑弹窗（含图片附件）
+│   ├── ChatExtractDialog.cs    # AI 识图 / 聊天记录导入提取弹窗
+│   ├── ImageAttachmentHelper.cs# 图片压缩、剪贴板读取与全屏预览
+│   ├── WeChatExportImportService.cs # 通用聊天导出(.md/.jsonl/.txt)与配图导入
+│   ├── TrayAndAppController.cs # 托盘、热键、窗口与附件远程同步调度
 │   ├── ThemeService.cs         # 6 套主题与尺度度量
-│   ├── GlassControlStyles.cs   # 玻璃质感控件样式
+│   ├── GlassControlStyles.cs   # 扁平/玻璃控件样式
 │   ├── SpringAnimationHelper.cs# iOS 风格弹簧动效
 │   ├── ReminderService.cs      # DDL 提醒调度
 │   ├── ReminderToastWindow.cs  # 提醒弹窗
 │   ├── UndoToastWindow.cs      # 撤销提示
-│   ├── AiSortService.cs        # AI 排序 / 提取（DeepSeek 等 OpenAI 兼容接口）
-│   ├── StorageService.cs       # data/ 持久化
-│   ├── Models.cs               # 数据模型
-│   ├── Win32Native.cs          # 贴桌面 / 无边框 / 毛玻璃原生调用
+│   ├── AiSortService.cs        # AI 排序 / 多模态识图提取
+│   ├── StorageService.cs       # data/ 与独立配置路径持久化
+│   ├── Models.cs               # 数据模型与版本号
+│   ├── Win32Native.cs          # 贴桌面 / 原生边角缩放 / 快捷方式原生调用
 │   ├── Tests.cs                # 内置自检
 │   ├── app.manifest            # DPI 感知与 UAC 声明
 │   └── app.ico
+├── installer_src/
+│   └── InstallerProgram.cs     # 单文件 WPF 安装向导与卸载器
 ├── server_src/
-│   └── ServerProgram.cs        # HttpListener 网页后端 + 口令鉴权 + JSON API
+│   └── ServerProgram.cs        # HttpListener 网页后端 + 口令鉴权 + JSON/附件 API
 ├── web/                        # 网页端前端
 │   ├── index.html
 │   ├── style.css
@@ -126,6 +139,7 @@ desktop_memo/
 ├── tools/
 │   └── DataVault.ps1           # data/ 加密保险箱（AES-256 + HMAC）
 ├── build.bat                   # 一键编译桌面端 + 服务端
+├── build_installer.bat         # 编译并打包单文件图形化安装包 DesktopMemoSetup.exe
 ├── start_server.bat            # 启动网页后端起服务
 ├── setup_windows_server.ps1    # Windows Server 一键部署
 └── README.md

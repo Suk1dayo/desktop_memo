@@ -27,6 +27,7 @@ namespace DesktopMemo
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | (SecurityProtocolType)3072;
 
             string dataRoot = null;
+            string explicitDataDir = null;
             if (args != null)
             {
                 for (int i = 0; i < args.Length; i++)
@@ -45,10 +46,14 @@ namespace DesktopMemo
                     {
                         dataRoot = a.Substring("--data-root=".Length).Trim('"');
                     }
+                    else if (a.StartsWith("--data-dir=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        explicitDataDir = a.Substring("--data-dir=".Length).Trim('"');
+                    }
                 }
             }
 
-            _storage = new StorageService(dataRoot);
+            _storage = new StorageService(dataRoot, explicitDataDir);
             AppConfig cfg = _storage.LoadConfig();
 
             bool portSpecifiedOnCli = args != null && args.Any(x => (x ?? "").StartsWith("--port=", StringComparison.OrdinalIgnoreCase));
@@ -142,6 +147,7 @@ namespace DesktopMemo
         {
             public string Method;
             public string Path;
+            public string Query = "";
             public Dictionary<string, string> Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             public string Body = "";
         }
@@ -177,6 +183,7 @@ namespace DesktopMemo
             string rawUrl = parts[1];
             int qIdx = rawUrl.IndexOf('?');
             req.Path = qIdx >= 0 ? rawUrl.Substring(0, qIdx) : rawUrl;
+            req.Query = qIdx >= 0 ? rawUrl.Substring(qIdx + 1) : "";
 
             for (int i = 1; i < lines.Length; i++)
             {
@@ -197,7 +204,7 @@ namespace DesktopMemo
 
             int bodyStart = headerEnd + 4;
             int alreadyHave = allBytes.Length - bodyStart;
-            if (contentLength > 0 && contentLength <= 16 * 1024 * 1024)
+            if (contentLength > 0 && contentLength <= 32 * 1024 * 1024)
             {
                 var bodyMs = new MemoryStream();
                 if (alreadyHave > 0)
@@ -306,7 +313,8 @@ namespace DesktopMemo
                     RemindAtIso = MemoTask.FormatIso(MemoTask.ParseIsoDateTime(ReadDictStr(d, "remindAtIso"))),
                     Quadrant = MemoTask.NormalizeQuadrant(ReadDictInt(d, "quadrant", 0)),
                     NoteId = ReadDictStr(d, "noteId"),
-                    AiReason = singleReason
+                    AiReason = singleReason,
+                    AttachmentFiles = ExtractSanitizedAttachments(d, "attachmentFiles")
                 };
                 lock (_stateLock)
                 {
@@ -349,7 +357,8 @@ namespace DesktopMemo
                             RemindAtIso = MemoTask.FormatIso(MemoTask.ParseIsoDateTime(ReadDictStr(row, "remindAtIso"))),
                             Quadrant = MemoTask.NormalizeQuadrant(ReadDictInt(row, "quadrant", 0)),
                             AiReason = reason,
-                            NoteId = ReadDictStr(row, "noteId")
+                            NoteId = ReadDictStr(row, "noteId"),
+                            AttachmentFiles = ExtractSanitizedAttachments(row, "attachmentFiles")
                         };
                         data.Tasks.Add(t);
                         added.Add(t);
@@ -389,6 +398,10 @@ namespace DesktopMemo
                         bool comp = ReadDictBool(d, "completed", target.Completed);
                         target.Completed = comp;
                         target.CompletedAtIso = comp ? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") : "";
+                    }
+                    if (d.ContainsKey("attachmentFiles"))
+                    {
+                        target.AttachmentFiles = ExtractSanitizedAttachments(d, "attachmentFiles");
                     }
                     _storage.SaveData(data);
                 }
@@ -538,10 +551,11 @@ namespace DesktopMemo
             {
                 var d = SafeDeserializeDict(ser, req.Body);
                 string text = ReadDictStr(d, "text");
+                List<string> images = ExtractStringList(d, "images");
                 AppConfig cfg;
                 lock (_stateLock) { cfg = _storage.LoadConfig(); }
 
-                AiChatExtractOutcome outcome = AiSortService.ExtractTasksFromChatAsync(cfg, text, DateTime.Now).GetAwaiter().GetResult();
+                AiChatExtractOutcome outcome = AiSortService.ExtractTasksFromMultimodalAsync(cfg, text, images, DateTime.Now).GetAwaiter().GetResult();
                 if (!outcome.Success)
                 {
                     WriteJsonError(stream, 400, outcome.ErrorMessage);
@@ -553,6 +567,71 @@ namespace DesktopMemo
                     { "ok", true },
                     { "tasks", outcome.Tasks }
                 });
+                return;
+            }
+
+            if (req.Method == "POST" && req.Path == "/api/attachments")
+            {
+                var d = SafeDeserializeDict(ser, req.Body);
+                string requestedName = ReadDictStr(d, "fileName");
+                string dataUrl = ReadDictStr(d, "dataUrl");
+                if (string.IsNullOrWhiteSpace(dataUrl))
+                {
+                    WriteJsonError(stream, 400, "缺少 dataUrl 图片数据。");
+                    return;
+                }
+
+                int comma = dataUrl.IndexOf(',');
+                string b64 = comma >= 0 ? dataUrl.Substring(comma + 1) : dataUrl;
+                byte[] bytes;
+                try
+                {
+                    bytes = Convert.FromBase64String(b64.Trim());
+                }
+                catch
+                {
+                    WriteJsonError(stream, 400, "无效的 Base64 图片数据。");
+                    return;
+                }
+
+                if (bytes == null || bytes.Length == 0 || bytes.Length > 10 * 1024 * 1024)
+                {
+                    WriteJsonError(stream, 400, "图片附件大小需在 10 MB 以内。");
+                    return;
+                }
+
+                string ext = DetectImageExt(bytes);
+                string safeReq = StorageService.SanitizeAttachmentFileName(requestedName);
+                string savedName = !string.IsNullOrEmpty(safeReq)
+                    ? _storage.SaveAttachmentWithExactName(safeReq, bytes)
+                    : _storage.SaveAttachmentBytes(bytes, ext);
+
+                WriteJson(stream, 200, new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "fileName", savedName }
+                });
+                return;
+            }
+
+            if (req.Method == "GET" && req.Path.StartsWith("/api/attachments/", StringComparison.OrdinalIgnoreCase))
+            {
+                string rawName = Uri.UnescapeDataString(req.Path.Substring("/api/attachments/".Length).Trim('/'));
+                string safeName = StorageService.SanitizeAttachmentFileName(rawName);
+                if (string.IsNullOrEmpty(safeName))
+                {
+                    WriteJsonError(stream, 400, "非法附件文件名。");
+                    return;
+                }
+                byte[] bytes = _storage.ReadAttachmentBytes(safeName);
+                if (bytes == null || bytes.Length == 0)
+                {
+                    WriteJsonError(stream, 404, "附件不存在。");
+                    return;
+                }
+                string ext = Path.GetExtension(safeName).ToLowerInvariant();
+                if (string.IsNullOrEmpty(ext)) ext = DetectImageExt(bytes);
+                WriteResponse(stream, 200, "OK", GetImageMimeType(ext), bytes);
                 return;
             }
 
@@ -614,9 +693,25 @@ namespace DesktopMemo
         private static bool VerifyRequestAuth(HttpRequest req)
         {
             string auth;
-            if (!req.Headers.TryGetValue("Authorization", out auth) || string.IsNullOrWhiteSpace(auth)) return false;
-            if (!auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return false;
-            string token = auth.Substring("Bearer ".Length).Trim();
+            if (req.Headers.TryGetValue("Authorization", out auth) && !string.IsNullOrWhiteSpace(auth))
+            {
+                if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    string token = auth.Substring("Bearer ".Length).Trim();
+                    if (VerifyToken(token)) return true;
+                }
+            }
+            if (req.Method == "GET" && req.Path.StartsWith("/api/attachments/", StringComparison.OrdinalIgnoreCase))
+            {
+                string qToken = ExtractQueryParam(req.Query, "token");
+                if (!string.IsNullOrEmpty(qToken) && VerifyToken(qToken)) return true;
+            }
+            return false;
+        }
+
+        private static bool VerifyToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return false;
             int dot = token.IndexOf('.');
             if (dot <= 0) return false;
 
@@ -626,6 +721,24 @@ namespace DesktopMemo
             if (!long.TryParse(payload, out exp)) return false;
             if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp) return false;
             return string.Equals(sig, ComputeHmac(payload), StringComparison.Ordinal);
+        }
+
+        private static string ExtractQueryParam(string query, string key)
+        {
+            if (string.IsNullOrWhiteSpace(query)) return "";
+            string[] pairs = query.Split('&');
+            for (int i = 0; i < pairs.Length; i++)
+            {
+                string p = pairs[i];
+                int eq = p.IndexOf('=');
+                if (eq <= 0) continue;
+                string k = Uri.UnescapeDataString(p.Substring(0, eq));
+                if (string.Equals(k, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Uri.UnescapeDataString(p.Substring(eq + 1));
+                }
+            }
+            return "";
         }
 
         private static string ComputeHmac(string payload)
@@ -710,6 +823,58 @@ namespace DesktopMemo
                 if (row != null) result.Add(row);
             }
             return result;
+        }
+
+        private static List<string> ExtractStringList(Dictionary<string, object> d, string key)
+        {
+            var result = new List<string>();
+            if (d == null || !d.ContainsKey(key) || d[key] == null) return result;
+            object raw = d[key];
+            if (raw is string || raw is IDictionary) return result;
+            var seq = raw as IEnumerable;
+            if (seq == null) return result;
+            foreach (object elem in seq)
+            {
+                if (elem != null)
+                {
+                    string s = elem.ToString().Trim();
+                    if (!string.IsNullOrEmpty(s)) result.Add(s);
+                }
+            }
+            return result;
+        }
+
+        private static List<string> ExtractSanitizedAttachments(Dictionary<string, object> d, string key)
+        {
+            List<string> raw = ExtractStringList(d, key);
+            var clean = new List<string>();
+            for (int i = 0; i < raw.Count; i++)
+            {
+                string safe = StorageService.SanitizeAttachmentFileName(raw[i]);
+                if (!string.IsNullOrEmpty(safe) && !clean.Contains(safe))
+                {
+                    clean.Add(safe);
+                }
+            }
+            return clean;
+        }
+
+        private static string DetectImageExt(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length < 4) return ".jpg";
+            if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return ".png";
+            if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46) return ".gif";
+            if (bytes.Length >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
+                && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50) return ".webp";
+            return ".jpg";
+        }
+
+        private static string GetImageMimeType(string ext)
+        {
+            if (ext == ".png") return "image/png";
+            if (ext == ".gif") return "image/gif";
+            if (ext == ".webp") return "image/webp";
+            return "image/jpeg";
         }
 
         private static string ReadDictStr(Dictionary<string, object> d, string key)

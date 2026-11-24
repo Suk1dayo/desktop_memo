@@ -7,6 +7,9 @@
     activeTab: "quadrants",
     editingTaskId: null,
     extractedTasks: [],
+    extractImages: [],
+    modalAttachments: [],
+    modalNewUploads: [],
     statusTimer: null
   };
 
@@ -27,6 +30,120 @@
   };
 
   const el = (id) => document.getElementById(id);
+
+  function attachmentUrl(fileName) {
+    return "/api/attachments/" + encodeURIComponent(fileName) + "?token=" + encodeURIComponent(state.token || "");
+  }
+
+  function showWebImagePreview(titleText, srcUrl) {
+    el("imgPreviewTitle").textContent = "🖼 " + (titleText || "图片预览");
+    el("imgPreviewEl").src = srcUrl;
+    el("imgPreviewModal").classList.remove("hidden");
+  }
+
+  function compressImageFileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("读取图片失败"));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("无法解码该图片"));
+        img.onload = () => {
+          const maxEdge = 1600;
+          let w = img.naturalWidth || img.width;
+          let h = img.naturalHeight || img.height;
+          if (w > maxEdge || h > maxEdge) {
+            const ratio = maxEdge / Math.max(w, h);
+            w = Math.max(1, Math.round(w * ratio));
+            h = Math.max(1, Math.round(h * ratio));
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.85));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderExtractImageStrip() {
+    const strip = el("extractImgStrip");
+    strip.innerHTML = "";
+    if (!state.extractImages || state.extractImages.length === 0) {
+      strip.classList.add("hidden");
+      return;
+    }
+    strip.classList.remove("hidden");
+    state.extractImages.forEach((item, idx) => {
+      const box = document.createElement("div");
+      box.className = "att-thumb";
+      const img = document.createElement("img");
+      img.src = item.dataUrl;
+      img.title = item.name || "点击预览";
+      img.onclick = () => showWebImagePreview(item.name || "待识别截图", item.dataUrl);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "att-del";
+      del.textContent = "✕";
+      del.onclick = () => {
+        state.extractImages.splice(idx, 1);
+        renderExtractImageStrip();
+      };
+      box.appendChild(img);
+      box.appendChild(del);
+      strip.appendChild(box);
+    });
+  }
+
+  function renderModalAttachments() {
+    const strip = el("mAttStrip");
+    strip.innerHTML = "";
+    state.modalAttachments.forEach((fname, idx) => {
+      const url = attachmentUrl(fname);
+      const box = document.createElement("div");
+      box.className = "att-thumb";
+      const img = document.createElement("img");
+      img.src = url;
+      img.title = fname;
+      img.onclick = () => showWebImagePreview(fname, url);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "att-del";
+      del.textContent = "✕";
+      del.onclick = () => {
+        state.modalAttachments.splice(idx, 1);
+        renderModalAttachments();
+      };
+      box.appendChild(img);
+      box.appendChild(del);
+      strip.appendChild(box);
+    });
+    state.modalNewUploads.forEach((item, idx) => {
+      const box = document.createElement("div");
+      box.className = "att-thumb";
+      const img = document.createElement("img");
+      img.src = item.dataUrl;
+      img.title = item.name || "待上传图片";
+      img.onclick = () => showWebImagePreview(item.name || "待上传图片", item.dataUrl);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "att-del";
+      del.textContent = "✕";
+      del.onclick = () => {
+        state.modalNewUploads.splice(idx, 1);
+        renderModalAttachments();
+      };
+      box.appendChild(img);
+      box.appendChild(del);
+      strip.appendChild(box);
+    });
+  }
 
   function showBanner(msg, isErr) {
     const b = el("statusToast");
@@ -218,6 +335,19 @@
       ap.textContent = `AI ${t.AiScore}分` + (t.AiReason ? ` · ${t.AiReason}` : "");
       badges.appendChild(ap);
     }
+    if (Array.isArray(t.AttachmentFiles) && t.AttachmentFiles.length > 0) {
+      const attBtn = document.createElement("button");
+      attBtn.type = "button";
+      attBtn.className = "pill att-pill";
+      attBtn.textContent = `🖼 ${t.AttachmentFiles.length}`;
+      attBtn.title = "点击查看附件图片（编辑弹窗可查看全部）";
+      attBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        const first = t.AttachmentFiles[0];
+        showWebImagePreview(first, attachmentUrl(first));
+      };
+      badges.appendChild(attBtn);
+    }
     if (badges.children.length > 0) main.appendChild(badges);
     card.appendChild(main);
 
@@ -391,6 +521,9 @@
       }
     });
     noteSel.value = (task && task.NoteId) || "";
+    state.modalAttachments = Array.isArray(task && task.AttachmentFiles) ? task.AttachmentFiles.slice() : [];
+    state.modalNewUploads = [];
+    renderModalAttachments();
     el("taskModal").classList.remove("hidden");
     el("mTitle").focus();
   }
@@ -442,24 +575,60 @@
 
   el("openNewTaskBtn").onclick = () => openTaskModal({ Quadrant: 1 });
   el("mCancelBtn").onclick = () => el("taskModal").classList.add("hidden");
+  el("imgPreviewCloseBtn").onclick = () => el("imgPreviewModal").classList.add("hidden");
+  el("imgPreviewModal").onclick = (ev) => {
+    if (ev.target === el("imgPreviewModal")) el("imgPreviewModal").classList.add("hidden");
+  };
+
+  el("mAddImgBtn").onclick = () => el("mImgInput").click();
+  el("mImgInput").onchange = async (ev) => {
+    const files = Array.from(ev.target.files || []);
+    for (const f of files) {
+      if (!f.type.startsWith("image/")) continue;
+      const dataUrl = await compressImageFileToDataUrl(f);
+      state.modalNewUploads.push({ name: f.name, dataUrl });
+    }
+    ev.target.value = "";
+    renderModalAttachments();
+  };
+
   el("mSaveBtn").onclick = async () => {
     const title = el("mTitle").value.trim();
     if (!title) return;
-    const payload = {
-      title,
-      notes: el("mNotes").value.trim(),
-      quadrant: parseInt(el("mQuad").value, 10),
-      noteId: el("mNoteId").value,
-      deadlineIso: el("mDdl").value ? el("mDdl").value.replace("T", " ") : "",
-      remindAtIso: el("mRem").value ? el("mRem").value.replace("T", " ") : ""
-    };
-    if (state.editingTaskId) {
-      await api("/api/tasks/" + state.editingTaskId, { method: "PUT", body: JSON.stringify(payload) });
-    } else {
-      await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
+    const btn = el("mSaveBtn");
+    btn.disabled = true;
+    try {
+      const finalAttachments = state.modalAttachments.slice();
+      for (const item of state.modalNewUploads) {
+        const up = await api("/api/attachments", {
+          method: "POST",
+          body: JSON.stringify({ dataUrl: item.dataUrl })
+        });
+        if (up && up.fileName && finalAttachments.indexOf(up.fileName) < 0) {
+          finalAttachments.push(up.fileName);
+        }
+      }
+      const payload = {
+        title,
+        notes: el("mNotes").value.trim(),
+        quadrant: parseInt(el("mQuad").value, 10),
+        noteId: el("mNoteId").value,
+        deadlineIso: el("mDdl").value ? el("mDdl").value.replace("T", " ") : "",
+        remindAtIso: el("mRem").value ? el("mRem").value.replace("T", " ") : "",
+        attachmentFiles: finalAttachments
+      };
+      if (state.editingTaskId) {
+        await api("/api/tasks/" + state.editingTaskId, { method: "PUT", body: JSON.stringify(payload) });
+      } else {
+        await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
+      }
+      el("taskModal").classList.add("hidden");
+      await loadState();
+    } catch (err) {
+      showBanner("⚠ 保存失败：" + err.message, true);
+    } finally {
+      btn.disabled = false;
     }
-    el("taskModal").classList.add("hidden");
-    await loadState();
   };
 
   el("searchInput").oninput = renderAll;
@@ -480,13 +649,61 @@
     }
   };
 
+  el("addExtractImgBtn").onclick = () => el("extractImgInput").click();
+  el("extractImgInput").onchange = async (ev) => {
+    const files = Array.from(ev.target.files || []);
+    for (const f of files) {
+      if (state.extractImages.length >= 4) break;
+      if (!f.type.startsWith("image/")) continue;
+      const dataUrl = await compressImageFileToDataUrl(f);
+      state.extractImages.push({ name: f.name, dataUrl });
+    }
+    ev.target.value = "";
+    renderExtractImageStrip();
+  };
+
+  document.addEventListener("paste", async (ev) => {
+    const items = (ev.clipboardData && ev.clipboardData.items) ? Array.from(ev.clipboardData.items) : [];
+    const imgItems = items.filter((it) => it.kind === "file" && it.type && it.type.startsWith("image/"));
+    if (imgItems.length === 0) return;
+
+    const modalVisible = !el("taskModal").classList.contains("hidden");
+    if (modalVisible) {
+      ev.preventDefault();
+      for (const it of imgItems) {
+        const f = it.getAsFile();
+        if (!f) continue;
+        const dataUrl = await compressImageFileToDataUrl(f);
+        state.modalNewUploads.push({ name: f.name || "剪贴板截图.jpg", dataUrl });
+      }
+      renderModalAttachments();
+      return;
+    }
+
+    if (state.activeTab === "extract") {
+      ev.preventDefault();
+      for (const it of imgItems) {
+        if (state.extractImages.length >= 4) break;
+        const f = it.getAsFile();
+        if (!f) continue;
+        const dataUrl = await compressImageFileToDataUrl(f);
+        state.extractImages.push({ name: f.name || "剪贴板截图.jpg", dataUrl });
+      }
+      renderExtractImageStrip();
+    }
+  });
+
   el("runExtractBtn").onclick = async () => {
     const text = el("chatExtractInput").value.trim();
-    if (!text) return;
+    const images = state.extractImages.map((x) => x.dataUrl);
+    if (!text && images.length === 0) {
+      el("extractStatus").textContent = "请先输入聊天文本或添加至少一张截图";
+      return;
+    }
     el("runExtractBtn").disabled = true;
-    el("extractStatus").textContent = "正在解析聊天文本...";
+    el("extractStatus").textContent = images.length > 0 ? `正在调用 AI 图文识图 (${images.length}张图)...` : "正在解析聊天文本...";
     try {
-      const res = await api("/api/ai/parse-chat", { method: "POST", body: JSON.stringify({ text }) });
+      const res = await api("/api/ai/parse-chat", { method: "POST", body: JSON.stringify({ text, images }) });
       state.extractedTasks = res.tasks || [];
       renderExtractPreview();
       el("extractStatus").textContent = `✓ 已识别 ${state.extractedTasks.length} 条任务，请勾选确认`;
@@ -559,6 +776,19 @@
     btn.disabled = true;
     el("extractStatus").textContent = "正在添加选中任务...";
     try {
+      const attachedNames = [];
+      if (el("extractAttachChk") && el("extractAttachChk").checked && state.extractImages.length > 0) {
+        for (const item of state.extractImages) {
+          const up = await api("/api/attachments", {
+            method: "POST",
+            body: JSON.stringify({ dataUrl: item.dataUrl })
+          });
+          if (up && up.fileName) attachedNames.push(up.fileName);
+        }
+      }
+      if (attachedNames.length > 0) {
+        chosen.forEach((c) => { c.attachmentFiles = attachedNames.slice(); });
+      }
       try {
         await api("/api/tasks/batch", { method: "POST", body: JSON.stringify({ tasks: chosen }) });
       } catch (batchErr) {
@@ -572,6 +802,8 @@
         }
       }
       state.extractedTasks = [];
+      state.extractImages = [];
+      renderExtractImageStrip();
       el("chatExtractInput").value = "";
       el("extractPreviewList").innerHTML = "";
       el("extractConfirmBar").classList.add("hidden");
@@ -595,6 +827,7 @@
 
   el("aiPresetSelect").onchange = () => {
     const presets = {
+      deepseek_flash: ["https://api.deepseek.com/v1", "deepseek-flash"],
       deepseek: ["https://api.deepseek.com/v1", "deepseek-chat"],
       deepseek_reasoner: ["https://api.deepseek.com/v1", "deepseek-reasoner"],
       openai: ["https://api.openai.com/v1", "gpt-4o-mini"],

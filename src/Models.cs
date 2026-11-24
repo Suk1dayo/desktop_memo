@@ -6,8 +6,8 @@ namespace DesktopMemo
 {
     public static class AppMeta
     {
-        public const string Version = "2.02";
-        public const string VersionTag = "v2.02";
+        public const string Version = "2.05";
+        public const string VersionTag = "v2.05";
     }
 
     public class DeadlineDisplayInfo
@@ -41,6 +41,7 @@ namespace DesktopMemo
         public string CompletedAtIso { get; set; }
         public string CreatedAtIso { get; set; }
         public string NoteId { get; set; }
+        public List<string> AttachmentFiles { get; set; }
 
         public MemoTask()
         {
@@ -57,6 +58,7 @@ namespace DesktopMemo
             CompletedAtIso = "";
             CreatedAtIso = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             NoteId = "";
+            AttachmentFiles = new List<string>();
         }
 
         public DateTime? GetDeadline()
@@ -354,6 +356,10 @@ namespace DesktopMemo
         public string AiModel { get; set; }
         public string AiCustomInstruction { get; set; }
 
+        // WeChatExportPlus Integration
+        public string WeChatExportExePath { get; set; }
+        public string WeChatExportOutputDir { get; set; }
+
         // Web Server & Remote Sync
         public int ServerPort { get; set; }
         public string ServerPassword { get; set; }
@@ -384,11 +390,13 @@ namespace DesktopMemo
             HotkeysEnabled = true;
             ReminderSoundEnabled = true;
 
-            AiProviderPreset = "deepseek";
+            AiProviderPreset = "deepseek_flash";
             AiBaseUrl = "https://api.deepseek.com/v1";
             AiApiKey = "";
-            AiModel = "deepseek-chat";
+            AiModel = "deepseek-flash";
             AiCustomInstruction = "";
+            WeChatExportExePath = "";
+            WeChatExportOutputDir = "";
 
             ServerPort = 8765;
             ServerPassword = "";

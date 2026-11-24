@@ -26,6 +26,8 @@ namespace DesktopMemo
             RunTest("AutoStartRegistryRead", TestAutoStartRegistryRead);
             RunTest("WpfUiSmokeConstruction", TestWpfUiSmokeConstruction);
             RunTest("StickyQuickAddAndRemoteSyncMerge", TestStickyQuickAddAndRemoteSyncMerge);
+            RunTest("V250PathAttachmentsWeChatImportAndResize", TestV250Features);
+            RunTest("DashboardSliderStyleStability", TestDashboardSliderStyleStability);
 
             string summary = string.Format("SUMMARY: passed={0}, failed={1}\r\n", _passed, _failed);
             _log.Append(summary);
@@ -305,8 +307,10 @@ namespace DesktopMemo
                 var undoToast = new UndoToastWindow("测试日程", "claude_warm");
 
                 AssertTrue(dash != null && sticky != null && dlg != null && chatDlg != null && toast != null && undoToast != null, "All WPF windows constructed");
-                AssertEqual("2.02", AppMeta.Version, "AppMeta.Version must be 2.02");
-                AssertEqual("v2.02", AppMeta.VersionTag, "AppMeta.VersionTag must be v2.02");
+                AssertEqual("2.05", AppMeta.Version, "AppMeta.Version must be 2.05");
+                AssertEqual("v2.05", AppMeta.VersionTag, "AppMeta.VersionTag must be v2.05");
+                AssertEqual(System.Windows.ResizeMode.CanResize, dash.ResizeMode, "Dashboard ResizeMode must be CanResize");
+                AssertEqual(System.Windows.ResizeMode.CanResize, sticky.ResizeMode, "Sticky ResizeMode must be CanResize");
                 AssertEqual(System.Windows.WindowStyle.None, dash.WindowStyle, "Dashboard WindowStyle must be None (no Win32 close button)");
                 AssertEqual(true, dash.AllowsTransparency, "Dashboard AllowsTransparency must be true");
                 AssertEqual(System.Windows.WindowStyle.None, sticky.WindowStyle, "Sticky WindowStyle must be None (no Win32 close button)");
@@ -419,6 +423,141 @@ namespace DesktopMemo
                 stickyWin.RebindNote(merged[0]);
                 stickyWin.ApplyThemeAndContent();
                 stickyWin.Close();
+            }
+            finally
+            {
+                try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        private static void TestV250Features()
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), "DesktopMemo_V250_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            try
+            {
+                string explicitData = Path.Combine(tempRoot, "custom_cfg");
+                string resolvedExplicit = StorageService.ResolveDataDirectory(null, explicitData);
+                AssertEqual(Path.GetFullPath(explicitData), resolvedExplicit, "Explicit data dir should take precedence");
+
+                string baseOnly = Path.Combine(tempRoot, "portable_base");
+                string resolvedBase = StorageService.ResolveDataDirectory(baseOnly, null);
+                AssertEqual(Path.Combine(baseOnly, "data"), resolvedBase, "Base dir resolves to base\\data");
+
+                var storage = new StorageService(null, explicitData);
+                AssertTrue(Directory.Exists(storage.AttachmentsDirectory), "Attachments directory should be created automatically");
+
+                string srcPng = Path.Combine(tempRoot, "sample.png");
+                using (var bmp = new System.Drawing.Bitmap(24, 18))
+                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                {
+                    g.Clear(System.Drawing.Color.CornflowerBlue);
+                    bmp.Save(srcPng, System.Drawing.Imaging.ImageFormat.Png);
+                }
+
+                byte[] compressed = ImageAttachmentHelper.CompressImageFileToJpeg(srcPng, 1600, 85);
+                AssertTrue(compressed != null && compressed.Length > 0, "Compressed JPEG bytes must be non-empty");
+                string dataUrl = ImageAttachmentHelper.ToDataUrl(compressed);
+                AssertTrue(dataUrl.StartsWith("data:image/jpeg;base64,", StringComparison.Ordinal), "DataUrl must have JPEG prefix");
+
+                string savedAtt = storage.SaveAttachmentBytes(compressed, ".jpg");
+                AssertTrue(!string.IsNullOrEmpty(savedAtt) && storage.AttachmentExists(savedAtt), "Attachment must be stored on disk");
+                byte[] readBack = storage.ReadAttachmentBytes(savedAtt);
+                AssertEqual(compressed.Length, readBack.Length, "Attachment byte round-trip length match");
+
+                AppData d = storage.LoadData();
+                d.Tasks[0].AttachmentFiles.Add(savedAtt);
+                storage.SaveData(d);
+
+                AppData reloaded = storage.LoadData();
+                AssertTrue(reloaded.Tasks[0].AttachmentFiles != null && reloaded.Tasks[0].AttachmentFiles.Contains(savedAtt),
+                    "Task AttachmentFiles must survive JSON round-trip");
+
+                // Chat export .md + image import test
+                string wxDir = Path.Combine(tempRoot, "wx_export");
+                Directory.CreateDirectory(wxDir);
+                File.Copy(srcPng, Path.Combine(wxDir, "0001.jpg"), true);
+                string todayStr = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+                string mdContent =
+                    "# 课程通知群\r\n" +
+                    "2020-01-01 09:00 张三: 很早以前的历史无关消息\r\n" +
+                    todayStr + " 李老师: [表情]\r\n" +
+                    todayStr + " 班长: 请今天晚上8点前提交实验报告 [图片0001]\r\n";
+                File.WriteAllText(Path.Combine(wxDir, "课程通知群.md"), mdContent, Encoding.UTF8);
+
+                WeChatImportResult wxRes = WeChatExportImportService.ImportFromPath(wxDir, 3, 12000);
+                AssertTrue(wxRes.FormattedText.IndexOf("实验报告", StringComparison.Ordinal) >= 0, "Recent ChatExport message must be imported");
+                AssertTrue(wxRes.FormattedText.IndexOf("很早以前的历史无关消息", StringComparison.Ordinal) < 0, "Old messages must be filtered by 3-day window");
+                AssertTrue(wxRes.SkippedNoise >= 1, "Pure [表情] noise must be filtered");
+                AssertTrue(wxRes.MatchedImagePaths.Count == 1, "Matched decrypted 0001.jpg image path expected");
+            }
+            finally
+            {
+                try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true); } catch { }
+            }
+        }
+
+        private static void TestDashboardSliderStyleStability()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "DesktopMemo_SliderStab_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            try
+            {
+                var storage = new StorageService(tempDir);
+                var controller = new TrayAndAppController(storage);
+                controller.Config.PanelTheme = "claude_warm";
+                controller.Config.PanelOpacity = 0.96;
+                controller.Config.PanelFontSize = 13;
+
+                var dash = new DashboardWindow(controller);
+                var sticky = new StickyNoteWindow(controller.Data.StickyNotes[0], controller);
+
+                object origSlider = dash.Resources[typeof(System.Windows.Controls.Slider)];
+                object origScroll = dash.Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)];
+                object origTb = dash.Resources[typeof(System.Windows.Controls.TextBox)];
+                AssertTrue(origSlider != null && origScroll != null && origTb != null, "Dashboard core resource styles must be populated");
+
+                // Changing opacity must NOT rebuild Slider, ScrollBar, or TextBox styles
+                controller.Config.PanelOpacity = 0.72;
+                dash.ApplyThemeAndRefreshAll();
+                AssertTrue(object.ReferenceEquals(origSlider, dash.Resources[typeof(System.Windows.Controls.Slider)]),
+                    "Opacity change must preserve Dashboard Slider Style reference");
+                AssertTrue(object.ReferenceEquals(origScroll, dash.Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)]),
+                    "Opacity change must preserve Dashboard ScrollBar Style reference");
+                AssertTrue(object.ReferenceEquals(origTb, dash.Resources[typeof(System.Windows.Controls.TextBox)]),
+                    "Opacity change must preserve Dashboard TextBox Style reference");
+
+                // Changing font size must update TextBox style, but NEVER rebuild Slider or ScrollBar styles
+                controller.Config.PanelFontSize = 16;
+                dash.ApplyThemeAndRefreshAll();
+                AssertTrue(object.ReferenceEquals(origSlider, dash.Resources[typeof(System.Windows.Controls.Slider)]),
+                    "Font size change must preserve Dashboard Slider Style reference");
+                AssertTrue(object.ReferenceEquals(origScroll, dash.Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)]),
+                    "Font size change must preserve Dashboard ScrollBar Style reference");
+                AssertTrue(!object.ReferenceEquals(origTb, dash.Resources[typeof(System.Windows.Controls.TextBox)]),
+                    "Font size change should refresh TextBox Style");
+
+                // Changing theme MUST rebuild Slider style for new theme colors
+                controller.Config.PanelTheme = "linear_dark";
+                dash.ApplyThemeAndRefreshAll();
+                AssertTrue(!object.ReferenceEquals(origSlider, dash.Resources[typeof(System.Windows.Controls.Slider)]),
+                    "Theme change should refresh Dashboard Slider Style");
+
+                // StickyNote opacity change must preserve Slider and TextBox styles
+                StickyNote note = controller.Data.StickyNotes[0];
+                note.Opacity = 0.95;
+                sticky.ApplyThemeAndContent();
+                object sSlider = sticky.Resources[typeof(System.Windows.Controls.Slider)];
+                object sTb = sticky.Resources[typeof(System.Windows.Controls.TextBox)];
+                AssertTrue(sSlider != null && sTb != null, "StickyNote resource styles must be populated");
+
+                note.Opacity = 0.75;
+                sticky.ApplyThemeAndContent();
+                AssertTrue(object.ReferenceEquals(sSlider, sticky.Resources[typeof(System.Windows.Controls.Slider)]),
+                    "Opacity change must preserve StickyNote Slider Style reference");
+                AssertTrue(object.ReferenceEquals(sTb, sticky.Resources[typeof(System.Windows.Controls.TextBox)]),
+                    "Opacity change must preserve StickyNote TextBox Style reference");
+
+                sticky.Close();
+                dash.Close();
             }
             finally
             {

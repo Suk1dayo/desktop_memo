@@ -63,7 +63,8 @@ namespace DesktopMemo
     {
         public static readonly AiPreset[] Presets = new AiPreset[]
         {
-            new AiPreset("deepseek", "DeepSeek (deepseek-chat)", "https://api.deepseek.com/v1", "deepseek-chat"),
+            new AiPreset("deepseek_flash", "DeepSeek Flash (deepseek-flash · 支持识图)", "https://api.deepseek.com/v1", "deepseek-flash"),
+            new AiPreset("deepseek", "DeepSeek (deepseek-chat · 纯文本)", "https://api.deepseek.com/v1", "deepseek-chat"),
             new AiPreset("deepseek_reasoner", "DeepSeek Reasoner (R1)", "https://api.deepseek.com/v1", "deepseek-reasoner"),
             new AiPreset("openai", "OpenAI (gpt-4o-mini)", "https://api.openai.com/v1", "gpt-4o-mini"),
             new AiPreset("siliconflow", "硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3"),
@@ -229,7 +230,16 @@ namespace DesktopMemo
             }
         }
 
-        public static async Task<AiChatExtractOutcome> ExtractTasksFromChatAsync(AppConfig config, string rawChatText, DateTime now)
+        public static Task<AiChatExtractOutcome> ExtractTasksFromChatAsync(AppConfig config, string rawChatText, DateTime now)
+        {
+            return ExtractTasksFromMultimodalAsync(config, rawChatText, null, now);
+        }
+
+        public static async Task<AiChatExtractOutcome> ExtractTasksFromMultimodalAsync(
+            AppConfig config,
+            string rawChatText,
+            List<string> imageDataUrls,
+            DateTime now)
         {
             var outcome = new AiChatExtractOutcome();
             if (config == null || string.IsNullOrWhiteSpace(config.AiApiKey))
@@ -238,21 +248,24 @@ namespace DesktopMemo
                 outcome.ErrorMessage = "尚未配置 API Key，请先到「AI 与设置」中填入 DeepSeek 或兼容接口的 Key。";
                 return outcome;
             }
-            if (string.IsNullOrWhiteSpace(rawChatText))
+
+            bool hasText = !string.IsNullOrWhiteSpace(rawChatText);
+            bool hasImages = imageDataUrls != null && imageDataUrls.Count > 0;
+            if (!hasText && !hasImages)
             {
                 outcome.Success = false;
-                outcome.ErrorMessage = "请先粘贴需要识别提取的聊天记录或通知文本。";
+                outcome.ErrorMessage = "请先粘贴聊天内容或添加至少一张截图/图片。";
                 return outcome;
             }
 
             string endpoint = NormalizeChatEndpoint(config.AiBaseUrl);
-            string model = string.IsNullOrWhiteSpace(config.AiModel) ? "deepseek-chat" : config.AiModel.Trim();
+            string model = string.IsNullOrWhiteSpace(config.AiModel) ? "deepseek-flash" : config.AiModel.Trim();
 
             string systemPrompt =
-                "你是智能日程助手。用户会发给你一段微信聊天记录、课程通知、小组分工或会议纪要。\n" +
-                "请你从中提取出所有具体的待办任务（去掉寒暄和无关水话），并结合当前日期推算具体 DDL 时间和重要紧急四象限。\n" +
+                "你是智能日程助手。用户会发给你微信聊天记录、课程通知、小组分工、会议纪要，或者相关通知/日程截图。\n" +
+                "请你综合文字与图片中的所有信息，提取出具体的待办任务（去掉寒暄和无关水话），并结合当前日期推算具体 DDL 时间和重要紧急四象限。\n" +
                 "四象限：1=重要且紧急，2=重要不紧急，3=紧急不重要，4=不重要不紧急。\n" +
-                "日期时间格式严格为 \"yyyy-MM-dd HH:mm\"（如 \"2026-11-24 23:59\"），若文本完全没提时间则留空 \"\"；如可合理建议提前提醒，可填 remind_at（同格式，否则 \"\"）。\n" +
+                "日期时间格式严格为 \"yyyy-MM-dd HH:mm\"（如 \"2026-11-24 23:59\"），若完全没提时间则留空 \"\"；如可合理建议提前提醒，可填 remind_at（同格式，否则 \"\"）。\n" +
                 "请严格只输出纯 JSON，不要任何解释文字：\n" +
                 "{\"tasks\":[{\"title\":\"简明任务标题(25字内)\",\"notes\":\"补充细节/提交要求/负责人\",\"deadline\":\"yyyy-MM-dd HH:mm\",\"remind_at\":\"\",\"quadrant\":1,\"reason\":\"归类简述(18字内)\"}]}";
 
@@ -262,7 +275,40 @@ namespace DesktopMemo
             {
                 userSb.Append("用户个人优先级偏好：").Append(config.AiCustomInstruction.Trim()).Append("\n");
             }
-            userSb.Append("聊天/通知原文：\n").Append(rawChatText.Trim());
+            if (hasText)
+            {
+                userSb.Append("聊天/通知原文：\n").Append(rawChatText.Trim());
+            }
+            else
+            {
+                userSb.Append("请仔细识别图片中的日程安排、会议时间、课程作业、活动地点与截止日期（DDL），整理成待办任务。");
+            }
+
+            object userContent;
+            if (hasImages)
+            {
+                var contentBlocks = new List<object>();
+                contentBlocks.Add(new Dictionary<string, object>
+                {
+                    { "type", "text" },
+                    { "text", userSb.ToString() }
+                });
+                for (int i = 0; i < imageDataUrls.Count; i++)
+                {
+                    string url = imageDataUrls[i];
+                    if (string.IsNullOrWhiteSpace(url)) continue;
+                    contentBlocks.Add(new Dictionary<string, object>
+                    {
+                        { "type", "image_url" },
+                        { "image_url", new Dictionary<string, object> { { "url", url } } }
+                    });
+                }
+                userContent = contentBlocks.ToArray();
+            }
+            else
+            {
+                userContent = userSb.ToString();
+            }
 
             var payload = new Dictionary<string, object>();
             payload["model"] = model;
@@ -273,17 +319,17 @@ namespace DesktopMemo
             payload["messages"] = new object[]
             {
                 new Dictionary<string, object> { { "role", "system" }, { "content", systemPrompt } },
-                new Dictionary<string, object> { { "role", "user" }, { "content", userSb.ToString() } }
+                new Dictionary<string, object> { { "role", "user" }, { "content", userContent } }
             };
 
             try
             {
-                string rawContent = await SendChatRequestAsync(endpoint, config.AiApiKey.Trim(), payload, 65);
+                string rawContent = await SendChatRequestAsync(endpoint, config.AiApiKey.Trim(), payload, hasImages ? 90 : 65);
                 List<AiExtractedTask> parsed = ParseExtractedTasksJson(rawContent);
                 if (parsed.Count == 0)
                 {
                     outcome.Success = false;
-                    outcome.ErrorMessage = "未能在该段文本中识别出明确的待办事项（AI 原始片段：" + Truncate(rawContent, 100) + "）。";
+                    outcome.ErrorMessage = "未能在内容中识别出明确的待办事项（AI 原始片段：" + Truncate(rawContent, 100) + "）。";
                     return outcome;
                 }
 
@@ -293,8 +339,16 @@ namespace DesktopMemo
             }
             catch (Exception ex)
             {
+                string msg = ex.Message ?? "";
+                if (hasImages && (msg.IndexOf("image_url", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("vision", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("multimodal", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("unknown variant", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    msg += "（提示：当前模型可能不支持识图，请在「AI 与设置」将模型切换为 deepseek-flash）";
+                }
                 outcome.Success = false;
-                outcome.ErrorMessage = "AI 识别提取失败：" + ex.Message;
+                outcome.ErrorMessage = "AI 识别提取失败：" + msg;
                 return outcome;
             }
         }
@@ -302,7 +356,7 @@ namespace DesktopMemo
         private static async Task<string> SendChatRequestAsync(string endpoint, string apiKey, Dictionary<string, object> payload, int timeoutSeconds)
         {
             var ser = new JavaScriptSerializer();
-            ser.MaxJsonLength = 8 * 1024 * 1024;
+            ser.MaxJsonLength = 32 * 1024 * 1024;
             string jsonBody = ser.Serialize(payload);
 
             using (var client = new HttpClient())

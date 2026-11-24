@@ -16,6 +16,7 @@ namespace DesktopMemo
 
         public const int WM_SYSCOMMAND = 0x0112;
         public const int SC_MINIMIZE = 0xF020;
+        public const int WM_GETMINMAXINFO = 0x0024;
         public const int WM_WINDOWPOSCHANGING = 0x0046;
         public const int WM_NCHITTEST = 0x0084;
         public const int WM_HOTKEY = 0x0312;
@@ -45,6 +46,23 @@ namespace DesktopMemo
 
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunValueName = "DesktopMemo";
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MINMAXINFO
+        {
+            public POINT ptReserved;
+            public POINT ptMaxSize;
+            public POINT ptMaxPosition;
+            public POINT ptMinTrackSize;
+            public POINT ptMaxTrackSize;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         public struct WINDOWPOS
@@ -249,6 +267,24 @@ namespace DesktopMemo
             bool isAdjustingZ,
             ref bool handled)
         {
+            return HandleDesktopAndResizeMessages(
+                window, hwnd, msg, wParam, lParam,
+                pinMode, locked, collapsed, isAdjustingZ, 8.0, ref handled);
+        }
+
+        public static IntPtr HandleDesktopAndResizeMessages(
+            Window window,
+            IntPtr hwnd,
+            int msg,
+            IntPtr wParam,
+            IntPtr lParam,
+            string pinMode,
+            bool locked,
+            bool collapsed,
+            bool isAdjustingZ,
+            double outerMargin,
+            ref bool handled)
+        {
             if (msg == WM_SYSCOMMAND)
             {
                 int cmd = wParam.ToInt32() & 0xFFF0;
@@ -257,6 +293,31 @@ namespace DesktopMemo
                     handled = true;
                     return IntPtr.Zero;
                 }
+            }
+            else if (msg == WM_GETMINMAXINFO)
+            {
+                try
+                {
+                    double dpiX = 1.0;
+                    double dpiY = 1.0;
+                    PresentationSource ps = PresentationSource.FromVisual(window);
+                    if (ps != null && ps.CompositionTarget != null)
+                    {
+                        dpiX = ps.CompositionTarget.TransformToDevice.M11;
+                        dpiY = ps.CompositionTarget.TransformToDevice.M22;
+                    }
+                    MINMAXINFO mmi = (MINMAXINFO)Marshal.PtrToStructure(lParam, typeof(MINMAXINFO));
+                    if (window.MinWidth > 0)
+                    {
+                        mmi.ptMinTrackSize.X = Math.Max(mmi.ptMinTrackSize.X, (int)Math.Ceiling(window.MinWidth * dpiX));
+                    }
+                    if (window.MinHeight > 0)
+                    {
+                        mmi.ptMinTrackSize.Y = Math.Max(mmi.ptMinTrackSize.Y, (int)Math.Ceiling(window.MinHeight * dpiY));
+                    }
+                    Marshal.StructureToPtr(mmi, lParam, true);
+                }
+                catch { }
             }
             else if (msg == WM_WINDOWPOSCHANGING)
             {
@@ -284,21 +345,41 @@ namespace DesktopMemo
                     Point pt = window.PointFromScreen(new Point(screenX, screenY));
                     double w = window.ActualWidth;
                     double h = window.ActualHeight;
-                    const double grip = 8.0;
+                    if (w <= 0 || h <= 0) return IntPtr.Zero;
 
-                    bool left = pt.X >= 0 && pt.X <= grip;
-                    bool right = pt.X <= w && pt.X >= w - grip;
-                    bool top = pt.Y >= 0 && pt.Y <= grip;
-                    bool bottom = pt.Y <= h && pt.Y >= h - grip;
+                    double edge = outerMargin >= 0 ? outerMargin : 8.0;
+                    double leftEdge = edge;
+                    double rightEdge = w - edge;
+                    double topEdge = edge;
+                    double bottomEdge = h - edge;
+                    const double outerOut = 4.0;
+                    const double innerIn = 6.0;
+                    const double corner = 16.0;
 
-                    if (top && left) { handled = true; return new IntPtr(HTTOPLEFT); }
-                    if (top && right) { handled = true; return new IntPtr(HTTOPRIGHT); }
-                    if (bottom && left) { handled = true; return new IntPtr(HTBOTTOMLEFT); }
-                    if (bottom && right) { handled = true; return new IntPtr(HTBOTTOMRIGHT); }
-                    if (left) { handled = true; return new IntPtr(HTLEFT); }
-                    if (right) { handled = true; return new IntPtr(HTRIGHT); }
-                    if (top) { handled = true; return new IntPtr(HTTOP); }
-                    if (bottom) { handled = true; return new IntPtr(HTBOTTOM); }
+                    if (pt.X < leftEdge - outerOut || pt.X > rightEdge + outerOut ||
+                        pt.Y < topEdge - outerOut || pt.Y > bottomEdge + outerOut)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    bool nearLeft = pt.X <= leftEdge + innerIn;
+                    bool nearRight = pt.X >= rightEdge - innerIn;
+                    bool nearTop = pt.Y <= topEdge + innerIn;
+                    bool nearBottom = pt.Y >= bottomEdge - innerIn;
+
+                    bool cornerLeft = pt.X <= leftEdge + corner;
+                    bool cornerRight = pt.X >= rightEdge - corner;
+                    bool cornerTop = pt.Y <= topEdge + corner;
+                    bool cornerBottom = pt.Y >= bottomEdge - corner;
+
+                    if ((nearTop && cornerLeft) || (nearLeft && cornerTop)) { handled = true; return new IntPtr(HTTOPLEFT); }
+                    if ((nearTop && cornerRight) || (nearRight && cornerTop)) { handled = true; return new IntPtr(HTTOPRIGHT); }
+                    if ((nearBottom && cornerLeft) || (nearLeft && cornerBottom)) { handled = true; return new IntPtr(HTBOTTOMLEFT); }
+                    if ((nearBottom && cornerRight) || (nearRight && cornerBottom)) { handled = true; return new IntPtr(HTBOTTOMRIGHT); }
+                    if (nearLeft) { handled = true; return new IntPtr(HTLEFT); }
+                    if (nearRight) { handled = true; return new IntPtr(HTRIGHT); }
+                    if (nearTop) { handled = true; return new IntPtr(HTTOP); }
+                    if (nearBottom) { handled = true; return new IntPtr(HTBOTTOM); }
                 }
                 catch
                 {
@@ -424,6 +505,63 @@ namespace DesktopMemo
             if (pinMode == "topmost") return "置顶悬浮";
             if (pinMode == "normal") return "普通窗口";
             return "贴在桌面";
+        }
+
+        public static bool CreateDesktopShortcut(string targetExePath, string shortcutName, string description, out string createdPath, out string error)
+        {
+            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string fileName = string.IsNullOrWhiteSpace(shortcutName) ? "桌面备忘录.lnk" : shortcutName.Trim();
+            if (!fileName.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) fileName += ".lnk";
+            createdPath = System.IO.Path.Combine(desktop, fileName);
+            string workDir = System.IO.Path.GetDirectoryName(targetExePath);
+            return CreateShortcutAt(createdPath, targetExePath, workDir, description, out error);
+        }
+
+        public static bool CreateShortcutAt(string shortcutFullPath, string targetExePath, string workingDir, string description, out string error)
+        {
+            error = "";
+            object shell = null;
+            object shortcut = null;
+            try
+            {
+                string dir = System.IO.Path.GetDirectoryName(shortcutFullPath);
+                if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+                {
+                    System.IO.Directory.CreateDirectory(dir);
+                }
+
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null)
+                {
+                    error = "系统未注册 WScript.Shell COM 组件。";
+                    return false;
+                }
+
+                shell = Activator.CreateInstance(shellType);
+                shortcut = shellType.InvokeMember("CreateShortcut",
+                    System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { shortcutFullPath });
+                Type scType = shortcut.GetType();
+                scType.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { targetExePath });
+                scType.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, shortcut,
+                    new object[] { string.IsNullOrEmpty(workingDir) ? System.IO.Path.GetDirectoryName(targetExePath) : workingDir });
+                scType.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { targetExePath + ",0" });
+                if (!string.IsNullOrEmpty(description))
+                {
+                    scType.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { description });
+                }
+                scType.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, shortcut, null);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+            finally
+            {
+                if (shortcut != null) { try { Marshal.FinalReleaseComObject(shortcut); } catch { } }
+                if (shell != null) { try { Marshal.FinalReleaseComObject(shell); } catch { } }
+            }
         }
     }
 }

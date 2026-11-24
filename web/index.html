@@ -27,7 +27,7 @@
           <span class="brand-mark small">✦</span>
           <span class="brand-name">DesktopMemo</span>
         </div>
-        <span class="version-pill">v2.02</span>
+        <span class="version-pill">v2.05</span>
       </div>
 
       <nav class="nav-list">
@@ -86,9 +86,15 @@
       <!-- Tab 3: WeChat / Chat AI Extraction -->
       <section id="tab-extract" class="tab-panel">
         <div class="editorial-card">
-          <h3>粘贴微信聊天记录、课程通知或会议分工</h3>
-          <p class="muted">AI 会结合当前日期自动拆解多项任务、推算 DDL 与四象限，你可以逐条勾选确认或修改后再写入。</p>
+          <h3>粘贴微信聊天记录、课程通知，或直接贴入截图识图</h3>
+          <p class="muted">支持粘贴文字、导入聊天导出文本与多模态截图识别（支持直接 Ctrl+V 粘贴截图）。</p>
           <textarea id="chatExtractInput" rows="5" placeholder="例如：&#10;@全体成员 下周三下午4点前把机器学习实验报告发到班长邮箱，记得周五晚上8点还有小组线上开会讨论PPT分工..."></textarea>
+          <input id="extractImgInput" type="file" accept="image/*" multiple class="hidden" />
+          <div class="row-actions wrap">
+            <button id="addExtractImgBtn" type="button" class="btn-ghost">📷 添加图片 / 贴截图</button>
+            <label class="inline-check"><input id="extractAttachChk" type="checkbox" checked /> 将识别图片存为日程附件</label>
+          </div>
+          <div id="extractImgStrip" class="att-strip hidden"></div>
           <div class="row-actions">
             <button id="runExtractBtn" class="btn-accent">✨ AI 解析任务</button>
             <span id="extractStatus" class="muted"></span>
@@ -114,7 +120,8 @@
           <h3>AI 智能排序接口设置</h3>
           <label>服务商预设
             <select id="aiPresetSelect">
-              <option value="deepseek">DeepSeek (deepseek-chat)</option>
+              <option value="deepseek_flash">DeepSeek Flash (deepseek-flash · 支持识图)</option>
+              <option value="deepseek">DeepSeek (deepseek-chat · 纯文本)</option>
               <option value="deepseek_reasoner">DeepSeek Reasoner (R1)</option>
               <option value="openai">OpenAI (gpt-4o-mini)</option>
               <option value="siliconflow">硅基流动 SiliconFlow</option>
@@ -177,10 +184,29 @@
           <input id="mRem" type="datetime-local" />
         </label>
       </div>
+      <div>
+        <div class="att-head-row">
+          <span class="att-lbl">🖼 图片附件（可 Ctrl+V 贴截图）</span>
+          <button id="mAddImgBtn" type="button" class="btn-ghost btn-sm">+ 添加图片</button>
+          <input id="mImgInput" type="file" accept="image/*" multiple class="hidden" />
+        </div>
+        <div id="mAttStrip" class="att-strip"></div>
+      </div>
       <div class="row-actions end">
         <button id="mCancelBtn" class="btn-ghost">取消</button>
         <button id="mSaveBtn" class="btn-primary">保存</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Image Preview Modal -->
+  <div id="imgPreviewModal" class="modal-backdrop hidden">
+    <div class="modal-card img-preview-card">
+      <div class="att-head-row">
+        <strong id="imgPreviewTitle">🖼 图片预览</strong>
+        <button id="imgPreviewCloseBtn" type="button" class="icon-btn">✕</button>
+      </div>
+      <img id="imgPreviewEl" class="img-preview-full" alt="附件预览" />
     </div>
   </div>
 

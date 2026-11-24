@@ -743,7 +743,7 @@ namespace DesktopMemo
         public bool OpenNewTaskDialog(MemoTask template, Window owner)
         {
             MemoTask draft = template ?? new MemoTask();
-            var dlg = new TaskEditDialog(draft, true, Data.StickyNotes, Config.PanelTheme, Config.UiScale, Config.PanelFontSize);
+            var dlg = new TaskEditDialog(draft, true, Data.StickyNotes, Config.PanelTheme, Config.UiScale, Config.PanelFontSize, Storage);
             if (owner != null && owner.IsVisible) dlg.Owner = owner;
             if (dlg.ShowDialog() == true)
             {
@@ -756,7 +756,7 @@ namespace DesktopMemo
         public void OpenEditTaskDialog(MemoTask task, Window owner)
         {
             if (task == null) return;
-            var dlg = new TaskEditDialog(task, false, Data.StickyNotes, Config.PanelTheme, Config.UiScale, Config.PanelFontSize);
+            var dlg = new TaskEditDialog(task, false, Data.StickyNotes, Config.PanelTheme, Config.UiScale, Config.PanelFontSize, Storage);
             if (owner != null && owner.IsVisible) dlg.Owner = owner;
             if (dlg.ShowDialog() == true)
             {
@@ -1053,6 +1053,7 @@ namespace DesktopMemo
                             Data.StickyNotes = mergedNotes;
                         }
                         SaveDataMarkSelf(false);
+                        await DownloadMissingAttachmentsAsync(client, baseUrl, Data);
                         if (isManual)
                         {
                             _pushedDataVersion = _localDataVersion;
@@ -1089,6 +1090,8 @@ namespace DesktopMemo
                     string token = await LoginRemoteServerAsync(client, baseUrl, Config.RemoteServerPassword);
                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
+                    await UploadTaskAttachmentsAsync(client, baseUrl, Data);
+
                     var ser = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
                     string json = ser.Serialize(Data);
                     using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
@@ -1114,6 +1117,66 @@ namespace DesktopMemo
                 {
                     _remotePushTimer.Stop();
                     _remotePushTimer.Start();
+                }
+            }
+        }
+
+        private async Task UploadTaskAttachmentsAsync(HttpClient client, string baseUrl, AppData data)
+        {
+            if (data == null || data.Tasks == null) return;
+            var uploaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var ser = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
+            for (int i = 0; i < data.Tasks.Count; i++)
+            {
+                MemoTask t = data.Tasks[i];
+                if (t.AttachmentFiles == null) continue;
+                for (int j = 0; j < t.AttachmentFiles.Count; j++)
+                {
+                    string name = StorageService.SanitizeAttachmentFileName(t.AttachmentFiles[j]);
+                    if (string.IsNullOrEmpty(name) || !uploaded.Add(name)) continue;
+                    byte[] bytes = Storage.ReadAttachmentBytes(name);
+                    if (bytes == null || bytes.Length == 0) continue;
+
+                    try
+                    {
+                        string payloadJson = ser.Serialize(new Dictionary<string, object>
+                        {
+                            { "fileName", name },
+                            { "dataUrl", ImageAttachmentHelper.ToDataUrl(bytes) }
+                        });
+                        using (var body = new StringContent(payloadJson, Encoding.UTF8, "application/json"))
+                        using (HttpResponseMessage r = await client.PostAsync(baseUrl + "/api/attachments", body))
+                        {
+                            // Best effort per attachment
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        private async Task DownloadMissingAttachmentsAsync(HttpClient client, string baseUrl, AppData data)
+        {
+            if (data == null || data.Tasks == null) return;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < data.Tasks.Count; i++)
+            {
+                MemoTask t = data.Tasks[i];
+                if (t.AttachmentFiles == null) continue;
+                for (int j = 0; j < t.AttachmentFiles.Count; j++)
+                {
+                    string name = StorageService.SanitizeAttachmentFileName(t.AttachmentFiles[j]);
+                    if (string.IsNullOrEmpty(name) || !seen.Add(name)) continue;
+                    if (Storage.AttachmentExists(name)) continue;
+                    try
+                    {
+                        byte[] bytes = await client.GetByteArrayAsync(baseUrl + "/api/attachments/" + Uri.EscapeDataString(name));
+                        if (bytes != null && bytes.Length > 0)
+                        {
+                            Storage.SaveAttachmentWithExactName(name, bytes);
+                        }
+                    }
+                    catch { }
                 }
             }
         }
