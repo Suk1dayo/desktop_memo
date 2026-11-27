@@ -23,6 +23,7 @@ namespace DesktopMemo
         private string _appliedControlStyleKey;
         private string _appliedPinMode;
         private bool _isImeComposing = false;
+        private int _timetableDayOffset = 0;
 
         public bool IsImeComposing { get { return _isImeComposing; } }
 
@@ -500,7 +501,17 @@ namespace DesktopMemo
                 ? Visibility.Visible
                 : Visibility.Collapsed;
 
-            _modeBadge.Text = StickyNote.GetFilterModeLabel(_note.FilterMode);
+            if (_note.FilterMode == "timetable")
+            {
+                int curW = _controller.Data != null && _controller.Data.Timetable != null
+                    ? _controller.Data.Timetable.GetWeekNumberForDate(DateTime.Now)
+                    : 0;
+                _modeBadge.Text = curW >= 1 ? string.Format("第{0}周课表", curW) : "今日课表";
+            }
+            else
+            {
+                _modeBadge.Text = StickyNote.GetFilterModeLabel(_note.FilterMode);
+            }
             _modeBadge.Foreground = pal.AccentFg;
             _modeBadgeBorder.Background = pal.AccentBg;
 
@@ -528,15 +539,215 @@ namespace DesktopMemo
             UiScaleMetrics scale = ThemeService.GetScaleMetrics(_controller.Config.UiScale, _note.FontSize);
             _tasksPanel.Children.Clear();
 
-            List<MemoTask> list = GetFilteredSortedTasks();
-            _emptyHint.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-
             DateTime now = DateTime.Now;
+            int courseCount = 0;
+            if (_note.FilterMode == "timetable")
+            {
+                courseCount = RenderTimetableCoursesInSticky(pal, scale, now);
+            }
+
+            List<MemoTask> list = GetFilteredSortedTasks();
+            _emptyHint.Visibility = (list.Count == 0 && courseCount == 0 && _note.FilterMode != "timetable")
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
             for (int i = 0; i < list.Count; i++)
             {
                 MemoTask task = list[i];
                 _tasksPanel.Children.Add(BuildTaskRow(task, pal, scale, now));
             }
+        }
+
+        private int RenderTimetableCoursesInSticky(ThemePalette pal, UiScaleMetrics scale, DateTime now)
+        {
+            TimetableData tt = _controller.Data != null ? _controller.Data.Timetable : null;
+            DateTime targetDate = now.Date.AddDays(_timetableDayOffset);
+            int weekNum = tt != null ? tt.GetWeekNumberForDate(targetDate) : 0;
+            int isoDay = TimetableData.ToIsoWeekday(targetDate.DayOfWeek);
+
+            var topBar = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            var infoLbl = new TextBlock
+            {
+                Text = weekNum >= 1
+                    ? string.Format("第{0}周 · {1} ({2})", weekNum, CourseItem.GetWeekdayName(isoDay), targetDate.ToString("MM/dd"))
+                    : string.Format("{0} ({1})", CourseItem.GetWeekdayName(isoDay), targetDate.ToString("MM/dd")),
+                FontFamily = ThemeService.AppFontFamily,
+                FontSize = scale.SmallFontSize + 0.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = pal.TextPrimary,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            DockPanel.SetDock(infoLbl, Dock.Left);
+            topBar.Children.Add(infoLbl);
+
+            var switchRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var todayBtn = GlassControlStyles.CreateGlassButton("今",
+                _timetableDayOffset == 0 ? pal.AccentBg : pal.SurfaceBg,
+                _timetableDayOffset == 0 ? pal.AccentFg : pal.TextSecondary,
+                _timetableDayOffset == 0 ? null : pal.Border,
+                scale.SmallFontSize, new Thickness(6, 1, 6, 1), 5);
+            todayBtn.Margin = new Thickness(0, 0, 3, 0);
+            todayBtn.Click += delegate { _timetableDayOffset = 0; RefreshTasksOnly(); };
+
+            var tmrBtn = GlassControlStyles.CreateGlassButton("明",
+                _timetableDayOffset == 1 ? pal.AccentBg : pal.SurfaceBg,
+                _timetableDayOffset == 1 ? pal.AccentFg : pal.TextSecondary,
+                _timetableDayOffset == 1 ? null : pal.Border,
+                scale.SmallFontSize, new Thickness(6, 1, 6, 1), 5);
+            tmrBtn.Click += delegate { _timetableDayOffset = 1; RefreshTasksOnly(); };
+
+            switchRow.Children.Add(todayBtn);
+            switchRow.Children.Add(tmrBtn);
+            topBar.Children.Add(switchRow);
+            _tasksPanel.Children.Add(topBar);
+
+            List<CourseItem> courses = tt != null ? tt.GetCoursesForDate(targetDate) : new List<CourseItem>();
+            if (courses.Count == 0)
+            {
+                _tasksPanel.Children.Add(new Border
+                {
+                    Background = pal.SurfaceBg,
+                    BorderBrush = pal.Border,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(scale.CornerRadius),
+                    Padding = scale.CardPadding,
+                    Margin = new Thickness(0, 0, 0, 5),
+                    Child = new TextBlock
+                    {
+                        Text = tt == null || tt.Courses.Count == 0
+                            ? "尚未导入课表，请在设置中接入 MIS 课程表。"
+                            : (_timetableDayOffset == 0 ? "今天没有排课 🎉" : "明天没有排课 🎉"),
+                        FontFamily = ThemeService.AppFontFamily,
+                        FontSize = scale.SmallFontSize + 0.5,
+                        Foreground = pal.TextSecondary
+                    }
+                });
+                return 0;
+            }
+
+            string nowHm = now.ToString("HH:mm");
+            for (int i = 0; i < courses.Count; i++)
+            {
+                CourseItem c = courses[i];
+                string st = tt != null ? tt.GetCourseStartTime(c) : c.GetEffectiveStartTime();
+                string et = tt != null ? tt.GetCourseEndTime(c) : c.GetEffectiveEndTime();
+                string stateTag = "";
+                string stateBg = "";
+                string stateFg = "";
+                if (_timetableDayOffset == 0)
+                {
+                    if (string.Compare(nowHm, st, StringComparison.Ordinal) >= 0 && string.Compare(nowHm, et, StringComparison.Ordinal) <= 0)
+                    {
+                        stateTag = "上课中";
+                        stateBg = "#DCFCE7";
+                        stateFg = "#15803D";
+                    }
+                    else if (string.Compare(nowHm, et, StringComparison.Ordinal) > 0)
+                    {
+                        stateTag = "已结束";
+                        stateBg = pal.IsDark ? "#252A36" : "#F1F5F9";
+                        stateFg = pal.TextSecondaryHex;
+                    }
+                }
+
+                var cCard = new Border
+                {
+                    Background = pal.SurfaceBg,
+                    BorderBrush = pal.Border,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(scale.CornerRadius),
+                    Padding = scale.CardPadding,
+                    Margin = new Thickness(0, 0, 0, 5)
+                };
+
+                var dock = new DockPanel();
+                var stripe = new Border
+                {
+                    Width = 4,
+                    CornerRadius = new CornerRadius(2),
+                    Background = ThemeService.BrushFromHex(string.IsNullOrEmpty(c.ColorHex) ? "#3B82F6" : c.ColorHex),
+                    Margin = new Thickness(0, 1, 8, 1)
+                };
+                DockPanel.SetDock(stripe, Dock.Left);
+                dock.Children.Add(stripe);
+
+                CourseItem capCourse = c;
+                string capEt = et;
+                var addCourseTaskBtn = GlassControlStyles.CreateGlassButton("+",
+                    pal.HoverBg, pal.TextSecondary, null, 12, new Thickness(5, 1, 5, 1), 5);
+                addCourseTaskBtn.ToolTip = "为此课程新建待办/作业DDL";
+                addCourseTaskBtn.VerticalAlignment = VerticalAlignment.Center;
+                addCourseTaskBtn.Click += delegate
+                {
+                    var draft = new MemoTask
+                    {
+                        Title = capCourse.Name + " ",
+                        Notes = string.IsNullOrWhiteSpace(capCourse.Location) ? "" : ("教室：" + capCourse.Location),
+                        Quadrant = 2,
+                        DeadlineIso = targetDate.ToString("yyyy-MM-dd") + " " + capEt
+                    };
+                    _controller.OpenNewTaskDialog(draft, this);
+                };
+                DockPanel.SetDock(addCourseTaskBtn, Dock.Right);
+                dock.Children.Add(addCourseTaskBtn);
+
+                var cInfo = new StackPanel();
+                var topLine = new WrapPanel();
+                topLine.Children.Add(new TextBlock
+                {
+                    Text = st + "-" + et,
+                    FontFamily = ThemeService.AppFontFamily,
+                    FontSize = scale.SmallFontSize,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = pal.AccentBg,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                topLine.Children.Add(new TextBlock
+                {
+                    Text = c.Name,
+                    FontFamily = ThemeService.AppFontFamily,
+                    FontSize = scale.FontSize,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = pal.TextPrimary,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                if (!string.IsNullOrEmpty(stateTag))
+                {
+                    topLine.Children.Add(new Border
+                    {
+                        Background = ThemeService.BrushFromHex(stateBg),
+                        CornerRadius = new CornerRadius(4),
+                        Padding = new Thickness(4, 0, 4, 0),
+                        Margin = new Thickness(6, 0, 0, 0),
+                        Child = new TextBlock
+                        {
+                            Text = stateTag,
+                            FontFamily = ThemeService.AppFontFamily,
+                            FontSize = Math.Max(9.5, scale.SmallFontSize - 1),
+                            Foreground = ThemeService.BrushFromHex(stateFg)
+                        }
+                    });
+                }
+                cInfo.Children.Add(topLine);
+
+                string metaStr = c.GetSectionLabel();
+                if (!string.IsNullOrWhiteSpace(c.Location)) metaStr += " · " + c.Location;
+                if (!string.IsNullOrWhiteSpace(c.Teacher)) metaStr += " · " + c.Teacher;
+                cInfo.Children.Add(new TextBlock
+                {
+                    Text = metaStr,
+                    FontFamily = ThemeService.AppFontFamily,
+                    FontSize = scale.SmallFontSize,
+                    Foreground = pal.TextSecondary,
+                    Margin = new Thickness(0, 2, 0, 0)
+                });
+
+                dock.Children.Add(cInfo);
+                cCard.Child = dock;
+                _tasksPanel.Children.Add(cCard);
+            }
+            return courses.Count;
         }
 
         private List<MemoTask> GetFilteredSortedTasks()
@@ -896,7 +1107,7 @@ namespace DesktopMemo
                 Margin = new Thickness(0, 0, 0, 4)
             });
             var modeBox = new ComboBox { Margin = new Thickness(0, 0, 0, 10) };
-            string[] modes = new string[] { "custom", "all", "q1", "q2", "q3", "q4" };
+            string[] modes = new string[] { "custom", "all", "timetable", "q1", "q2", "q3", "q4" };
             for (int i = 0; i < modes.Length; i++)
             {
                 var item = new ComboBoxItem { Content = StickyNote.GetFilterModeLabel(modes[i]), Tag = modes[i] };

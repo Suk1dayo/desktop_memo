@@ -42,7 +42,10 @@ namespace DesktopMemo
 
         public const uint MOD_ALT = 0x0001;
         public const uint MOD_CONTROL = 0x0002;
+        public const uint MOD_SHIFT = 0x0004;
+        public const uint MOD_WIN = 0x0008;
         public const uint MOD_NOREPEAT = 0x4000;
+        public const int VK_ESCAPE = 0x1B;
 
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunValueName = "DesktopMemo";
@@ -115,6 +118,126 @@ namespace DesktopMemo
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll")]
+        public static extern short GetAsyncKeyState(int vKey);
+
+        public static bool IsVirtualKeyPressed(uint vk)
+        {
+            return (GetAsyncKeyState((int)vk) & 0x8000) != 0;
+        }
+
+        public static bool ParseHotkeyString(string spec, out uint modifiers, out uint vk, out string normalized)
+        {
+            modifiers = 0;
+            vk = 0;
+            normalized = "";
+            if (string.IsNullOrWhiteSpace(spec)) return false;
+
+            bool ctrl = false;
+            bool alt = false;
+            bool shift = false;
+            bool win = false;
+            string mainToken = "";
+
+            string[] parts = spec.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string tok = (parts[i] ?? "").Trim();
+                if (tok.Length == 0) continue;
+                string lower = tok.ToLowerInvariant();
+                if (lower == "ctrl" || lower == "control") ctrl = true;
+                else if (lower == "alt") alt = true;
+                else if (lower == "shift") shift = true;
+                else if (lower == "win" || lower == "windows") win = true;
+                else mainToken = tok;
+            }
+
+            if (string.IsNullOrEmpty(mainToken)) return false;
+
+            System.Windows.Input.Key wpfKey;
+            if (!TryParseHotkeyKeyToken(mainToken, out wpfKey)) return false;
+            int rawVk = System.Windows.Input.KeyInterop.VirtualKeyFromKey(wpfKey);
+            if (rawVk <= 0) return false;
+
+            bool isFnKey = wpfKey >= System.Windows.Input.Key.F1 && wpfKey <= System.Windows.Input.Key.F12;
+            if (!ctrl && !alt && !shift && !win && !isFnKey) return false;
+
+            if (ctrl) modifiers |= MOD_CONTROL;
+            if (alt) modifiers |= MOD_ALT;
+            if (shift) modifiers |= MOD_SHIFT;
+            if (win) modifiers |= MOD_WIN;
+            vk = (uint)rawVk;
+
+            var sb = new System.Text.StringBuilder();
+            if (ctrl) sb.Append("Ctrl+");
+            if (alt) sb.Append("Alt+");
+            if (shift) sb.Append("Shift+");
+            if (win) sb.Append("Win+");
+            sb.Append(FormatKeyToken(wpfKey));
+            normalized = sb.ToString();
+            return true;
+        }
+
+        public static bool FormatHotkeyFromWpf(System.Windows.Input.ModifierKeys mods, System.Windows.Input.Key key, out string normalized)
+        {
+            normalized = "";
+            if (key == System.Windows.Input.Key.None ||
+                key == System.Windows.Input.Key.System ||
+                key == System.Windows.Input.Key.ImeProcessed ||
+                key == System.Windows.Input.Key.DeadCharProcessed ||
+                key == System.Windows.Input.Key.LeftCtrl ||
+                key == System.Windows.Input.Key.RightCtrl ||
+                key == System.Windows.Input.Key.LeftAlt ||
+                key == System.Windows.Input.Key.RightAlt ||
+                key == System.Windows.Input.Key.LeftShift ||
+                key == System.Windows.Input.Key.RightShift ||
+                key == System.Windows.Input.Key.LWin ||
+                key == System.Windows.Input.Key.RWin)
+            {
+                return false;
+            }
+
+            var parts = new System.Collections.Generic.List<string>();
+            if ((mods & System.Windows.Input.ModifierKeys.Control) != 0) parts.Add("Ctrl");
+            if ((mods & System.Windows.Input.ModifierKeys.Alt) != 0) parts.Add("Alt");
+            if ((mods & System.Windows.Input.ModifierKeys.Shift) != 0) parts.Add("Shift");
+            if ((mods & System.Windows.Input.ModifierKeys.Windows) != 0) parts.Add("Win");
+            parts.Add(FormatKeyToken(key));
+
+            uint dummyMods;
+            uint dummyVk;
+            return ParseHotkeyString(string.Join("+", parts.ToArray()), out dummyMods, out dummyVk, out normalized);
+        }
+
+        private static bool TryParseHotkeyKeyToken(string token, out System.Windows.Input.Key key)
+        {
+            key = System.Windows.Input.Key.None;
+            if (string.IsNullOrWhiteSpace(token)) return false;
+            string t = token.Trim();
+            if (t.Length == 1 && t[0] >= '0' && t[0] <= '9')
+            {
+                t = "D" + t;
+            }
+            else if (t.Length == 1 && ((t[0] >= 'a' && t[0] <= 'z') || (t[0] >= 'A' && t[0] <= 'Z')))
+            {
+                t = t.ToUpperInvariant();
+            }
+            if (Enum.TryParse<System.Windows.Input.Key>(t, true, out key))
+            {
+                if (key != System.Windows.Input.Key.None) return true;
+            }
+            return false;
+        }
+
+        private static string FormatKeyToken(System.Windows.Input.Key key)
+        {
+            if (key >= System.Windows.Input.Key.D0 && key <= System.Windows.Input.Key.D9)
+            {
+                return ((char)('0' + (key - System.Windows.Input.Key.D0))).ToString();
+            }
+            return key.ToString();
+        }
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]

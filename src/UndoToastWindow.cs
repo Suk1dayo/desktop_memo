@@ -15,8 +15,20 @@ namespace DesktopMemo
         public event Action UndoClicked;
 
         public UndoToastWindow(string deletedTitle, string themeKey)
+            : this(BuildDeletedLabel(deletedTitle), themeKey, true)
         {
-            Title = "撤回删除";
+        }
+
+        private static string BuildDeletedLabel(string deletedTitle)
+        {
+            string rawTitle = string.IsNullOrWhiteSpace(deletedTitle) ? "未命名日程" : deletedTitle.Trim();
+            string shortTitle = rawTitle.Length > 16 ? rawTitle.Substring(0, 16) + "…" : rawTitle;
+            return "已删除「" + shortTitle + "」";
+        }
+
+        public UndoToastWindow(string displayText, string themeKey, bool rawMessage)
+        {
+            Title = "撤回操作";
             Width = 360;
             SizeToContent = SizeToContent.Height;
             WindowStyle = WindowStyle.None;
@@ -49,11 +61,8 @@ namespace DesktopMemo
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            string rawTitle = string.IsNullOrWhiteSpace(deletedTitle) ? "未命名日程" : deletedTitle.Trim();
-            string shortTitle = rawTitle.Length > 16 ? rawTitle.Substring(0, 16) + "…" : rawTitle;
-
             var label = new TextBlock();
-            label.Text = "已删除「" + shortTitle + "」";
+            label.Text = rawMessage ? (displayText ?? "") : BuildDeletedLabel(displayText);
             label.FontFamily = ThemeService.AppFontFamily;
             label.FontSize = 13;
             label.FontWeight = FontWeights.Medium;

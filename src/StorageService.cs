@@ -155,6 +155,44 @@ namespace DesktopMemo
                     if (data == null) data = new AppData();
                     if (data.Tasks == null) data.Tasks = new List<MemoTask>();
                     if (data.StickyNotes == null) data.StickyNotes = new List<StickyNote>();
+                    if (data.Timetable == null) data.Timetable = new TimetableData();
+                    if (data.Timetable.TotalWeeks < 1 || data.Timetable.TotalWeeks > 30) data.Timetable.TotalWeeks = 20;
+                    if (data.Timetable.SectionsPerDay < 0 || data.Timetable.SectionsPerDay > 16) data.Timetable.SectionsPerDay = 0;
+                    if (data.Timetable.RowMinHeight < 36 || data.Timetable.RowMinHeight > 80) data.Timetable.RowMinHeight = 52;
+                    if (data.Timetable.Courses == null) data.Timetable.Courses = new List<CourseItem>();
+                    if (data.Timetable.SectionTimes == null) data.Timetable.SectionTimes = new List<SectionTimeSlot>();
+                    var cleanedSlots = new List<SectionTimeSlot>();
+                    for (int i = 0; i < data.Timetable.SectionTimes.Count; i++)
+                    {
+                        SectionTimeSlot st = data.Timetable.SectionTimes[i];
+                        if (st == null || st.Section < 1 || st.Section > 16) continue;
+                        st.StartTime = CourseItem.NormalizeTimeToken(st.StartTime);
+                        st.EndTime = CourseItem.NormalizeTimeToken(st.EndTime);
+                        if (!string.IsNullOrEmpty(st.StartTime) || !string.IsNullOrEmpty(st.EndTime))
+                        {
+                            cleanedSlots.Add(st);
+                        }
+                    }
+                    cleanedSlots.Sort(delegate(SectionTimeSlot a, SectionTimeSlot b) { return a.Section.CompareTo(b.Section); });
+                    data.Timetable.SectionTimes = cleanedSlots;
+
+                    for (int i = 0; i < data.Timetable.Courses.Count; i++)
+                    {
+                        CourseItem c = data.Timetable.Courses[i];
+                        if (string.IsNullOrEmpty(c.Id)) c.Id = Guid.NewGuid().ToString("N").Substring(0, 12);
+                        if (c.Name == null) c.Name = "";
+                        if (c.Teacher == null) c.Teacher = "";
+                        if (c.Location == null) c.Location = "";
+                        if (c.DayOfWeek < 1 || c.DayOfWeek > 7) c.DayOfWeek = 1;
+                        if (c.StartSection < 1) c.StartSection = 1;
+                        if (c.StartSection > 16) c.StartSection = 16;
+                        if (c.EndSection < c.StartSection) c.EndSection = c.StartSection;
+                        if (c.EndSection > 16) c.EndSection = 16;
+                        c.WeekType = CourseItem.NormalizeWeekType(c.WeekType);
+                        if (c.CustomWeeks == null) c.CustomWeeks = new List<int>();
+                        if (c.ExcludedWeeks == null) c.ExcludedWeeks = new List<int>();
+                        if (string.IsNullOrEmpty(c.ColorHex)) c.ColorHex = "#3B82F6";
+                    }
 
                     for (int i = 0; i < data.Tasks.Count; i++)
                     {
@@ -363,11 +401,18 @@ namespace DesktopMemo
             if (cfg.PanelPinMode != "desktop" && cfg.PanelPinMode != "topmost" && cfg.PanelPinMode != "normal")
                 cfg.PanelPinMode = "desktop";
             if (string.IsNullOrEmpty(cfg.SortBy)) cfg.SortBy = "ai";
+            if (cfg.HotkeyNewTask == null) cfg.HotkeyNewTask = "Ctrl+Alt+N";
+            if (cfg.HotkeyToggleAll == null) cfg.HotkeyToggleAll = "Ctrl+Alt+M";
+            if (cfg.HotkeyShowPanel == null) cfg.HotkeyShowPanel = "Ctrl+Alt+P";
+            if (cfg.HotkeyNewSticky == null) cfg.HotkeyNewSticky = "Ctrl+Alt+S";
+            if (cfg.HotkeyVoiceMemo == null) cfg.HotkeyVoiceMemo = "Ctrl+Alt+V";
+            if (cfg.VoiceTriggerMode != "hold") cfg.VoiceTriggerMode = "toggle";
             if (string.IsNullOrEmpty(cfg.AiProviderPreset)) cfg.AiProviderPreset = "deepseek_flash";
             if (string.IsNullOrEmpty(cfg.AiBaseUrl)) cfg.AiBaseUrl = "https://api.deepseek.com/v1";
             if (string.IsNullOrEmpty(cfg.AiModel)) cfg.AiModel = "deepseek-flash";
             if (cfg.AiApiKey == null) cfg.AiApiKey = "";
             if (cfg.AiCustomInstruction == null) cfg.AiCustomInstruction = "";
+            if (cfg.MisUrl == null) cfg.MisUrl = "";
             if (cfg.WeChatExportExePath == null) cfg.WeChatExportExePath = "";
             if (cfg.WeChatExportOutputDir == null) cfg.WeChatExportOutputDir = "";
             if (cfg.ServerPort < 1024 || cfg.ServerPort > 65535) cfg.ServerPort = 8765;

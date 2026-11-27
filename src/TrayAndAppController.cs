@@ -21,6 +21,7 @@ namespace DesktopMemo
         private const int HotkeyToggleAll = 9002;
         private const int HotkeyShowPanel = 9003;
         private const int HotkeyNewSticky = 9004;
+        private const int HotkeyVoiceMemo = 9005;
 
         public StorageService Storage { get; private set; }
         public AppData Data { get; private set; }
@@ -38,6 +39,15 @@ namespace DesktopMemo
         private WinForms.NotifyIcon _trayIcon;
         private WinForms.ToolStripMenuItem _trayAutoStartItem;
         private HwndSource _hotkeySource;
+        private bool _hotkeysPaused = false;
+        private uint _activeVoiceVk = 0;
+        private VoiceAudioRecorder _voiceRecorder;
+        private VoiceMemoOverlayWindow _voiceOverlay;
+        private DispatcherTimer _voicePollTimer;
+        private DateTime _voiceStartUtc = DateTime.MinValue;
+        private bool _voiceHoldMode = false;
+        private bool _isVoiceProcessing = false;
+        private readonly List<string> _lastVoiceAddedIds = new List<string>();
         private FileSystemWatcher _dataWatcher;
         private DateTime _lastSelfWriteUtc = DateTime.MinValue;
         private AiSortSnapshot _lastAiSnapshot;
@@ -53,6 +63,7 @@ namespace DesktopMemo
         public bool CanUndoDelete { get { return _lastDeletedTask != null; } }
         public bool HasPendingRemotePush { get { return _localDataVersion > _pushedDataVersion; } }
         public long LocalDataVersion { get { return _localDataVersion; } }
+        public string HotkeyWarningMessage { get; private set; }
 
         public TrayAndAppController(StorageService storage)
         {
@@ -177,6 +188,7 @@ namespace DesktopMemo
             _remotePushTimer.Stop();
             _remoteSyncTimer.Stop();
             _reminderService.Stop();
+            CleanupVoiceSession(true);
 
             if (_dataWatcher != null)
             {
@@ -780,6 +792,80 @@ namespace DesktopMemo
             dlg.ShowDialog();
         }
 
+        public void OpenChatExtractDialogWithVoice(string transcript, List<AiExtractedTask> tasks)
+        {
+            var dlg = new ChatExtractDialog(this, "");
+            if (_dashboardWindow != null && _dashboardWindow.IsVisible) dlg.Owner = _dashboardWindow;
+            dlg.PreloadVoiceResult(transcript, tasks);
+            dlg.ShowDialog();
+        }
+
+        public bool OpenMisImportDialog(Window owner)
+        {
+            var dlg = new MisImportDialog(this);
+            if (owner != null && owner.IsVisible) dlg.Owner = owner;
+            return dlg.ShowDialog() == true;
+        }
+
+        public void SaveTimetable(TimetableData tt)
+        {
+            if (tt == null) return;
+            Data.Timetable = tt;
+            Config.MisEnabled = true;
+            SaveDataMarkSelf();
+            Storage.SaveConfig(Config);
+            RebuildTrayMenu();
+            if (_dashboardWindow != null)
+            {
+                _dashboardWindow.UpdateMisTabVisibility();
+                _dashboardWindow.ApplyThemeAndRefreshAll();
+            }
+            foreach (StickyNoteWindow w in _stickyWindows.Values)
+            {
+                w.ApplyThemeAndContent();
+            }
+        }
+
+        public void OpenOrFocusTimetableStickyNote()
+        {
+            StickyNote existing = Data.StickyNotes.FirstOrDefault(n => n.FilterMode == "timetable");
+            if (existing != null)
+            {
+                existing.Visible = true;
+                if (Config.DisplayMode == "panel") Config.DisplayMode = "both";
+                _allHiddenByUser = false;
+                SaveDataMarkSelf();
+                ApplyDisplayModeVisibility();
+                StickyNoteWindow win;
+                if (_stickyWindows.TryGetValue(existing.Id, out win))
+                {
+                    win.ApplyThemeAndContent();
+                    try { win.Activate(); } catch { }
+                }
+            }
+            else
+            {
+                int offset = Data.StickyNotes.Count * 28;
+                var note = new StickyNote
+                {
+                    Title = "课程表",
+                    FilterMode = "timetable",
+                    ShowScratchpad = false,
+                    Theme = Config.PanelTheme,
+                    Left = Math.Max(40, 80 + offset),
+                    Top = Math.Max(40, 80 + offset),
+                    Width = 310,
+                    Height = 360
+                };
+                Data.StickyNotes.Add(note);
+                if (Config.DisplayMode == "panel") Config.DisplayMode = "both";
+                _allHiddenByUser = false;
+                SaveDataMarkSelf();
+                ApplyDisplayModeVisibility();
+                RefreshAllViews();
+            }
+        }
+
         public async Task<AiSortOutcome> RunAiSortAsync()
         {
             List<MemoTask> active = Data.Tasks.Where(t => !t.Completed).ToList();
@@ -795,7 +881,7 @@ namespace DesktopMemo
                 });
             }
 
-            AiSortOutcome outcome = await AiSortService.SortTasksAsync(Config, active, DateTime.Now);
+            AiSortOutcome outcome = await AiSortService.SortTasksAsync(Config, active, DateTime.Now, Data.Timetable);
             if (!outcome.Success) return outcome;
 
             _lastAiSnapshot = snapshot;
@@ -1197,12 +1283,25 @@ namespace DesktopMemo
             _trayIcon.Text = "桌面备忘录 " + AppMeta.VersionTag + " (双击呼出面板)";
             _trayIcon.Visible = true;
             _trayIcon.DoubleClick += delegate { ShowDashboardWindow(); };
+            RebuildTrayMenu();
+        }
 
+        public void RebuildTrayMenu()
+        {
+            if (_trayIcon == null) return;
             var menu = new WinForms.ContextMenuStrip();
-            menu.Items.Add("打开整合主面板 (Ctrl+Alt+P)", null, delegate { ShowDashboardWindow(); });
-            menu.Items.Add("新建日程 / DDL (Ctrl+Alt+N)", null, delegate { OpenNewTaskDialog(new MemoTask(), _dashboardWindow); });
-            menu.Items.Add("新建独立便利贴 (Ctrl+Alt+S)", null, delegate { CreateNewStickyNote("custom", false); });
-            menu.Items.Add("💬 AI 微信聊天提取任务", null, delegate { OpenChatExtractDialog("", _dashboardWindow); });
+            menu.Items.Add(FormatMenuLabel("打开主面板", Config.HotkeyShowPanel), null, delegate { ShowDashboardWindow(); });
+            menu.Items.Add(FormatMenuLabel("新建日程", Config.HotkeyNewTask), null, delegate { OpenNewTaskDialog(new MemoTask(), _dashboardWindow); });
+            menu.Items.Add(FormatMenuLabel("新建独立便签", Config.HotkeyNewSticky), null, delegate { CreateNewStickyNote("custom", false); });
+            if (Config.VoiceMemoEnabled)
+            {
+                menu.Items.Add(FormatMenuLabel("🎙 语音快捷备忘", Config.HotkeyVoiceMemo), null, delegate { ToggleOrStartVoiceMemoFromMenu(); });
+            }
+            if (Config.MisEnabled)
+            {
+                menu.Items.Add("📅 打开课表便签", null, delegate { OpenOrFocusTimetableStickyNote(); });
+            }
+            menu.Items.Add("💬 AI 文本 / 识图提取", null, delegate { OpenChatExtractDialog("", _dashboardWindow); });
             menu.Items.Add("✨ AI 智能排序", null, delegate
             {
                 ShowDashboardWindow();
@@ -1216,7 +1315,7 @@ namespace DesktopMemo
             modeMenu.DropDownItems.Add("混合共存模式", null, delegate { SetDisplayMode("both"); });
             menu.Items.Add(modeMenu);
 
-            menu.Items.Add("显示 / 隐藏全部 (Ctrl+Alt+M)", null, delegate { ToggleShowHideAll(); });
+            menu.Items.Add(FormatMenuLabel("显示 / 隐藏全部", Config.HotkeyToggleAll), null, delegate { ToggleShowHideAll(); });
             menu.Items.Add("全部贴在桌面", null, delegate { SetAllPinToDesktop(); });
             menu.Items.Add("锁定全部独立便签", null, delegate { SetAllStickiesLocked(true); });
             menu.Items.Add("解锁全部独立便签", null, delegate { SetAllStickiesLocked(false); });
@@ -1260,6 +1359,11 @@ namespace DesktopMemo
             _trayIcon.ContextMenuStrip = menu;
         }
 
+        private static string FormatMenuLabel(string label, string hotkey)
+        {
+            return string.IsNullOrWhiteSpace(hotkey) ? label : (label + " (" + hotkey + ")");
+        }
+
         private void InitializeHotkeyHost()
         {
             var parameters = new HwndSourceParameters("DesktopMemoHotkeyHost")
@@ -1272,17 +1376,75 @@ namespace DesktopMemo
             _hotkeySource.AddHook(HotkeyWndProc);
         }
 
+        public void PauseGlobalHotkeys()
+        {
+            _hotkeysPaused = true;
+            UnregisterAllHotkeys();
+        }
+
+        public void ResumeGlobalHotkeys()
+        {
+            _hotkeysPaused = false;
+            RefreshGlobalHotkeys();
+        }
+
         public void RefreshGlobalHotkeys()
         {
+            HotkeyWarningMessage = "";
+            _activeVoiceVk = 0;
             UnregisterAllHotkeys();
-            if (!Config.HotkeysEnabled || _hotkeySource == null) return;
+            if (_hotkeysPaused || !Config.HotkeysEnabled || _hotkeySource == null) return;
 
             IntPtr hwnd = _hotkeySource.Handle;
-            uint mods = Win32Native.MOD_CONTROL | Win32Native.MOD_ALT | Win32Native.MOD_NOREPEAT;
-            Win32Native.RegisterHotKey(hwnd, HotkeyNewTask, mods, 0x4E);   // N
-            Win32Native.RegisterHotKey(hwnd, HotkeyToggleAll, mods, 0x4D); // M
-            Win32Native.RegisterHotKey(hwnd, HotkeyShowPanel, mods, 0x50); // P
-            Win32Native.RegisterHotKey(hwnd, HotkeyNewSticky, mods, 0x53); // S
+            var warnings = new List<string>();
+            var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            TryBindHotkey(hwnd, HotkeyNewTask, "新建日程", Config.HotkeyNewTask, used, warnings);
+            TryBindHotkey(hwnd, HotkeyToggleAll, "显隐全部", Config.HotkeyToggleAll, used, warnings);
+            TryBindHotkey(hwnd, HotkeyShowPanel, "打开主面板", Config.HotkeyShowPanel, used, warnings);
+            TryBindHotkey(hwnd, HotkeyNewSticky, "新建便签", Config.HotkeyNewSticky, used, warnings);
+
+            if (Config.VoiceMemoEnabled)
+            {
+                uint vVk = TryBindHotkey(hwnd, HotkeyVoiceMemo, "语音备忘", Config.HotkeyVoiceMemo, used, warnings);
+                _activeVoiceVk = vVk;
+            }
+
+            if (warnings.Count > 0)
+            {
+                HotkeyWarningMessage = string.Join("；", warnings.ToArray());
+            }
+            RebuildTrayMenu();
+        }
+
+        private static uint TryBindHotkey(
+            IntPtr hwnd,
+            int id,
+            string label,
+            string spec,
+            HashSet<string> used,
+            List<string> warnings)
+        {
+            if (string.IsNullOrWhiteSpace(spec)) return 0;
+            uint mods;
+            uint vk;
+            string norm;
+            if (!Win32Native.ParseHotkeyString(spec, out mods, out vk, out norm))
+            {
+                warnings.Add(label + " 快捷键格式无效(" + spec + ")");
+                return 0;
+            }
+            if (!used.Add(norm))
+            {
+                warnings.Add(label + " 与其他快捷键冲突(" + norm + ")");
+                return 0;
+            }
+            if (!Win32Native.RegisterHotKey(hwnd, id, mods | Win32Native.MOD_NOREPEAT, vk))
+            {
+                warnings.Add(label + " (" + norm + ") 注册失败，可能被其他程序占用");
+                return 0;
+            }
+            return vk;
         }
 
         private void UnregisterAllHotkeys()
@@ -1293,11 +1455,12 @@ namespace DesktopMemo
             Win32Native.UnregisterHotKey(hwnd, HotkeyToggleAll);
             Win32Native.UnregisterHotKey(hwnd, HotkeyShowPanel);
             Win32Native.UnregisterHotKey(hwnd, HotkeyNewSticky);
+            Win32Native.UnregisterHotKey(hwnd, HotkeyVoiceMemo);
         }
 
         private IntPtr HotkeyWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == Win32Native.WM_HOTKEY)
+            if (msg == Win32Native.WM_HOTKEY && !_hotkeysPaused)
             {
                 int id = wParam.ToInt32();
                 if (id == HotkeyNewTask)
@@ -1320,8 +1483,287 @@ namespace DesktopMemo
                     CreateNewStickyNote("custom", false);
                     handled = true;
                 }
+                else if (id == HotkeyVoiceMemo)
+                {
+                    HandleVoiceHotkeyPressed();
+                    handled = true;
+                }
             }
             return IntPtr.Zero;
+        }
+
+        private void ToggleOrStartVoiceMemoFromMenu()
+        {
+            if (!EnsureAiConfiguredForVoice()) return;
+            if (_isVoiceProcessing) return;
+            if (_voiceRecorder != null && _voiceRecorder.IsRecording)
+            {
+                FinishVoiceMemoAsync();
+            }
+            else
+            {
+                StartVoiceMemoRecording(false);
+            }
+        }
+
+        private void HandleVoiceHotkeyPressed()
+        {
+            if (!Config.VoiceMemoEnabled) return;
+            if (!EnsureAiConfiguredForVoice()) return;
+            if (_isVoiceProcessing) return;
+
+            bool isHold = string.Equals(Config.VoiceTriggerMode, "hold", StringComparison.OrdinalIgnoreCase);
+            if (_voiceRecorder != null && _voiceRecorder.IsRecording)
+            {
+                if (!isHold)
+                {
+                    FinishVoiceMemoAsync();
+                }
+                return;
+            }
+
+            StartVoiceMemoRecording(isHold);
+        }
+
+        private bool EnsureAiConfiguredForVoice()
+        {
+            if (!string.IsNullOrWhiteSpace(Config.AiApiKey)) return true;
+            if (_trayIcon != null)
+            {
+                _trayIcon.ShowBalloonTip(3000, "需要先配置 AI", "语音快捷备忘需要先在「AI 与设置」中配置 DeepSeek API Key。", WinForms.ToolTipIcon.Warning);
+            }
+            ShowDashboardWindow();
+            if (_dashboardWindow != null) _dashboardWindow.OpenSettingsTab();
+            return false;
+        }
+
+        private void StartVoiceMemoRecording(bool isHoldMode)
+        {
+            CleanupVoiceSession(true);
+
+            var rec = new VoiceAudioRecorder();
+            string err;
+            if (!rec.Start(out err))
+            {
+                rec.Dispose();
+                if (_trayIcon != null)
+                {
+                    _trayIcon.ShowBalloonTip(3500, "无法启动录音", err, WinForms.ToolTipIcon.Error);
+                }
+                else
+                {
+                    MessageBox.Show(err, "语音备忘", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                return;
+            }
+
+            _voiceRecorder = rec;
+            _voiceHoldMode = isHoldMode;
+            _voiceStartUtc = DateTime.UtcNow;
+
+            var overlay = new VoiceMemoOverlayWindow(Config.PanelTheme);
+            overlay.SetRecordingHint(string.IsNullOrWhiteSpace(Config.HotkeyVoiceMemo) ? "快捷键" : Config.HotkeyVoiceMemo, isHoldMode);
+            overlay.FinishRequested += delegate { FinishVoiceMemoAsync(); };
+            overlay.CancelRequested += delegate { CancelVoiceMemoRecording(); };
+            overlay.Closed += delegate
+            {
+                if (_voiceOverlay == overlay) _voiceOverlay = null;
+            };
+            _voiceOverlay = overlay;
+            overlay.Show();
+
+            rec.LevelChanged += delegate(double lv)
+            {
+                if (Application.Current != null && !Application.Current.Dispatcher.HasShutdownStarted)
+                {
+                    Application.Current.Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        if (_voiceOverlay != null) _voiceOverlay.UpdateAudioLevel(lv);
+                    }));
+                }
+            };
+
+            _voicePollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(45) };
+            _voicePollTimer.Tick += delegate
+            {
+                if (_voiceRecorder == null || !_voiceRecorder.IsRecording)
+                {
+                    if (_voicePollTimer != null) _voicePollTimer.Stop();
+                    return;
+                }
+                if (Win32Native.IsVirtualKeyPressed((uint)Win32Native.VK_ESCAPE))
+                {
+                    CancelVoiceMemoRecording();
+                    return;
+                }
+                if (_voiceHoldMode && _activeVoiceVk != 0)
+                {
+                    double ms = (DateTime.UtcNow - _voiceStartUtc).TotalMilliseconds;
+                    if (ms >= 150 && !Win32Native.IsVirtualKeyPressed(_activeVoiceVk))
+                    {
+                        if (ms < 320) CancelVoiceMemoRecording();
+                        else FinishVoiceMemoAsync();
+                    }
+                }
+            };
+            _voicePollTimer.Start();
+        }
+
+        private void CancelVoiceMemoRecording()
+        {
+            CleanupVoiceSession(true);
+        }
+
+        private async void FinishVoiceMemoAsync()
+        {
+            if (_isVoiceProcessing || _voiceRecorder == null) return;
+            _isVoiceProcessing = true;
+
+            if (_voicePollTimer != null) { _voicePollTimer.Stop(); _voicePollTimer = null; }
+            byte[] wav = _voiceRecorder.StopAndGetWavBytes();
+            _voiceRecorder.Dispose();
+            _voiceRecorder = null;
+
+            if (wav == null || wav.Length <= 44)
+            {
+                _isVoiceProcessing = false;
+                CleanupVoiceSession(false);
+                return;
+            }
+
+            if (_voiceOverlay != null)
+            {
+                _voiceOverlay.SetProcessingState("正在语音转文字…", "使用 DeepSeek ASR 识别中");
+            }
+
+            try
+            {
+                AiTranscriptionOutcome tr = await AiSortService.TranscribeAudioAsync(Config, wav);
+                if (!tr.Success)
+                {
+                    CleanupVoiceSession(false);
+                    if (_trayIcon != null)
+                    {
+                        _trayIcon.ShowBalloonTip(4000, "语音转文字失败", tr.ErrorMessage, WinForms.ToolTipIcon.Warning);
+                    }
+                    return;
+                }
+
+                if (_voiceOverlay != null)
+                {
+                    _voiceOverlay.SetProcessingState("AI 整理日程中…", tr.Text);
+                }
+
+                AiChatExtractOutcome ext = await AiSortService.ExtractTasksFromMultimodalAsync(
+                    Config, tr.Text, null, DateTime.Now, Data.Timetable);
+
+                List<AiExtractedTask> items = ext.Success ? ext.Tasks : new List<AiExtractedTask>();
+                if (items.Count == 0 && !string.IsNullOrWhiteSpace(tr.Text))
+                {
+                    items.Add(new AiExtractedTask
+                    {
+                        Title = tr.Text.Length > 45 ? tr.Text.Substring(0, 45) + "..." : tr.Text,
+                        Notes = tr.Text.Length > 45 ? tr.Text : "",
+                        Quadrant = 0,
+                        Selected = true
+                    });
+                }
+
+                CleanupVoiceSession(false);
+
+                if (Config.VoiceAutoCommit)
+                {
+                    var addedTasks = new List<MemoTask>();
+                    _lastVoiceAddedIds.Clear();
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        AiExtractedTask item = items[i];
+                        var mt = new MemoTask
+                        {
+                            Title = item.Title,
+                            Notes = item.Notes,
+                            DeadlineIso = item.DeadlineIso,
+                            RemindAtIso = item.RemindAtIso,
+                            Quadrant = MemoTask.NormalizeQuadrant(item.Quadrant),
+                            AiReason = string.IsNullOrWhiteSpace(item.Reason) ? "语音快捷记录" : ("语音 · " + item.Reason)
+                        };
+                        addedTasks.Add(mt);
+                        _lastVoiceAddedIds.Add(mt.Id);
+                    }
+                    AddTasksBatch(addedTasks);
+
+                    string firstTitle = addedTasks[0].Title ?? "新日程";
+                    if (firstTitle.Length > 12) firstTitle = firstTitle.Substring(0, 12) + "…";
+                    string toastMsg = addedTasks.Count == 1
+                        ? ("🎙 语音已添加：「" + firstTitle + "」")
+                        : string.Format("🎙 语音已添加 {0} 条日程（「{1}」等）", addedTasks.Count, firstTitle);
+                    ShowVoiceAddedUndoToast(toastMsg);
+                }
+                else
+                {
+                    OpenChatExtractDialogWithVoice(tr.Text, items);
+                }
+            }
+            catch (Exception ex)
+            {
+                CleanupVoiceSession(false);
+                if (_trayIcon != null)
+                {
+                    _trayIcon.ShowBalloonTip(4000, "语音处理异常", ex.Message, WinForms.ToolTipIcon.Warning);
+                }
+            }
+            finally
+            {
+                _isVoiceProcessing = false;
+            }
+        }
+
+        private void ShowVoiceAddedUndoToast(string messageText)
+        {
+            CloseUndoToast();
+            var toast = new UndoToastWindow(messageText, Config.PanelTheme, true);
+            toast.UndoClicked += delegate { UndoLastVoiceAddedBatch(); };
+            toast.Closed += delegate
+            {
+                if (_undoToast == toast) _undoToast = null;
+            };
+            _undoToast = toast;
+            toast.Show();
+            toast.PositionBottomRight();
+        }
+
+        private void UndoLastVoiceAddedBatch()
+        {
+            if (_lastVoiceAddedIds.Count == 0) return;
+            var removeSet = new HashSet<string>(_lastVoiceAddedIds);
+            _lastVoiceAddedIds.Clear();
+            int removed = Data.Tasks.RemoveAll(t => removeSet.Contains(t.Id));
+            if (removed > 0)
+            {
+                SaveDataMarkSelf();
+                RefreshAllViews();
+            }
+        }
+
+        private void CleanupVoiceSession(bool cancelRecorder)
+        {
+            if (_voicePollTimer != null)
+            {
+                _voicePollTimer.Stop();
+                _voicePollTimer = null;
+            }
+            if (cancelRecorder && _voiceRecorder != null)
+            {
+                try { _voiceRecorder.Cancel(); } catch { }
+                try { _voiceRecorder.Dispose(); } catch { }
+                _voiceRecorder = null;
+            }
+            if (_voiceOverlay != null)
+            {
+                VoiceMemoOverlayWindow ov = _voiceOverlay;
+                _voiceOverlay = null;
+                try { ov.Close(); } catch { }
+            }
         }
     }
 }

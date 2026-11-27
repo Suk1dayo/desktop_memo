@@ -681,7 +681,7 @@ namespace DesktopMemo
             try
             {
                 AiChatExtractOutcome outcome = await AiSortService.ExtractTasksFromMultimodalAsync(
-                    _controller.Config, rawText, imageUrls, DateTime.Now);
+                    _controller.Config, rawText, imageUrls, DateTime.Now, _controller.Data.Timetable);
                 if (!outcome.Success)
                 {
                     _statusText.Text = "⚠ " + outcome.ErrorMessage;
@@ -704,6 +704,19 @@ namespace DesktopMemo
             {
                 _extractBtn.IsEnabled = true;
                 _extractBtn.Content = "✨ AI 解析提取任务";
+            }
+        }
+
+        public void PreloadVoiceResult(string transcript, List<AiExtractedTask> tasks)
+        {
+            if (_chatInputBox != null) _chatInputBox.Text = transcript ?? "";
+            _extractedTasks = tasks ?? new List<AiExtractedTask>();
+            RenderPreviewRows();
+            if (_confirmBtn != null) _confirmBtn.IsEnabled = _extractedTasks.Count > 0;
+            if (_statusText != null)
+            {
+                _statusText.Text = string.Format("🎙 语音已识别 {0} 条任务，确认或微调后点击加入。", _extractedTasks.Count);
+                _statusText.Foreground = ThemeService.BrushFromHex("#059669");
             }
         }
 

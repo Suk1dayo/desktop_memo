@@ -11,7 +11,7 @@ restore/
 DesktopMemo.exe
 DesktopMemoServer.exe
 DesktopMemoSetup.exe
-*_prev.exe
+*_prev*.exe
 obj_installer/
 bin/
 obj/

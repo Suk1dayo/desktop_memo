@@ -28,6 +28,7 @@ namespace DesktopMemo
             RunTest("StickyQuickAddAndRemoteSyncMerge", TestStickyQuickAddAndRemoteSyncMerge);
             RunTest("V250PathAttachmentsWeChatImportAndResize", TestV250Features);
             RunTest("DashboardSliderStyleStability", TestDashboardSliderStyleStability);
+            RunTest("V21TimetableVoiceAndHotkeys", TestV21Features);
 
             string summary = string.Format("SUMMARY: passed={0}, failed={1}\r\n", _passed, _failed);
             _log.Append(summary);
@@ -104,7 +105,7 @@ namespace DesktopMemo
 
                 var note = new StickyNote
                 {
-                    Title = "桌面玻璃便签",
+                    Title = "桌面便签",
                     Content = "可选文本",
                     ShowScratchpad = false,
                     Theme = "warm_yellow", // legacy name should migrate
@@ -307,8 +308,8 @@ namespace DesktopMemo
                 var undoToast = new UndoToastWindow("测试日程", "claude_warm");
 
                 AssertTrue(dash != null && sticky != null && dlg != null && chatDlg != null && toast != null && undoToast != null, "All WPF windows constructed");
-                AssertEqual("2.05", AppMeta.Version, "AppMeta.Version must be 2.05");
-                AssertEqual("v2.05", AppMeta.VersionTag, "AppMeta.VersionTag must be v2.05");
+                AssertEqual("2.11", AppMeta.Version, "AppMeta.Version must be 2.11");
+                AssertEqual("v2.11", AppMeta.VersionTag, "AppMeta.VersionTag must be v2.11");
                 AssertEqual(System.Windows.ResizeMode.CanResize, dash.ResizeMode, "Dashboard ResizeMode must be CanResize");
                 AssertEqual(System.Windows.ResizeMode.CanResize, sticky.ResizeMode, "Sticky ResizeMode must be CanResize");
                 AssertEqual(System.Windows.WindowStyle.None, dash.WindowStyle, "Dashboard WindowStyle must be None (no Win32 close button)");
@@ -557,6 +558,302 @@ namespace DesktopMemo
                     "Opacity change must preserve StickyNote TextBox Style reference");
 
                 sticky.Close();
+                dash.Close();
+            }
+            finally
+            {
+                try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        private static void TestV21Features()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "DesktopMemo_V21_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            try
+            {
+                // 1. Teaching week & Gregorian alignment
+                var tt = new TimetableData
+                {
+                    SemesterName = "2026秋",
+                    SemesterStartMondayIso = "2026-09-07",
+                    TotalWeeks = 20
+                };
+                AssertEqual(1, tt.GetWeekNumberForDate(new DateTime(2026, 9, 7)), "Week 1 Monday check");
+                AssertEqual(12, tt.GetWeekNumberForDate(new DateTime(2026, 11, 26)), "Nov 26 2026 should be Week 12");
+
+                DateTime? w14Wed = tt.GetDateForWeekAndDay(14, 3);
+                AssertTrue(w14Wed.HasValue && w14Wed.Value == new DateTime(2026, 12, 9), "Week 14 Wednesday must align to 2026-12-09");
+
+                string alignedDdl = tt.AlignWeekTextToDateIso("第14周周三交机器学习实验报告", "", null, null, new DateTime(2026, 11, 26));
+                AssertTrue(alignedDdl.StartsWith("2026-12-09", StringComparison.Ordinal), "Chinese week text aligned to 2026-12-09: " + alignedDdl);
+
+                string alignedCnDdl = tt.AlignWeekTextToDateIso("第十四周星期四汇报", "2026-12-01 19:30", null, null, new DateTime(2026, 11, 26));
+                AssertEqual("2026-12-10 19:30", alignedCnDdl, "Chinese numeral week + preserved HH:mm alignment");
+
+                var oddCourse = new CourseItem { Name = "编译原理", DayOfWeek = 4, StartSection = 1, EndSection = 2, StartWeek = 1, EndWeek = 16, WeekType = "odd", Location = "教一-102" };
+                var evenCourse = new CourseItem { Name = "体育", DayOfWeek = 4, StartSection = 3, EndSection = 4, StartWeek = 1, EndWeek = 16, WeekType = "even", Location = "操场" };
+                tt.Courses.Add(oddCourse);
+                tt.Courses.Add(evenCourse);
+
+                AssertEqual(true, oddCourse.OccursInWeek(11), "Odd course occurs in Week 11");
+                AssertEqual(false, oddCourse.OccursInWeek(12), "Odd course does not occur in Week 12");
+                AssertEqual(true, evenCourse.OccursInWeek(12), "Even course occurs in Week 12");
+
+                string aiCtx = tt.BuildAiWeekContext(new DateTime(2026, 11, 26));
+                AssertTrue(aiCtx.IndexOf("第12周", StringComparison.Ordinal) >= 0, "AI week context includes current week 12");
+
+                // 2. .ics parsing
+                string sampleIcs =
+                    "BEGIN:VCALENDAR\r\n" +
+                    "BEGIN:VEVENT\r\n" +
+                    "SUMMARY:数据结构\r\n" +
+                    "LOCATION:二教305\r\n" +
+                    "DTSTART:20260908T080000\r\n" +
+                    "DTEND:20260908T094000\r\n" +
+                    "RRULE:FREQ=WEEKLY;COUNT=16;INTERVAL=1\r\n" +
+                    "END:VEVENT\r\n" +
+                    "END:VCALENDAR\r\n";
+                TimetableData parsedIcs = TimetableService.ParseIcsContent(sampleIcs, new DateTime(2026, 11, 26));
+                AssertEqual(1, parsedIcs.Courses.Count, "ICS parsed 1 course");
+                AssertEqual("数据结构", parsedIcs.Courses[0].Name, "ICS course summary");
+                AssertEqual(2, parsedIcs.Courses[0].DayOfWeek, "Sep 8 2026 is Tuesday (ISO 2)");
+                AssertEqual("2026-09-07", parsedIcs.SemesterStartMondayIso, "ICS derived Week 1 Monday");
+
+                // 3. WAV header builder + Hotkey parsing + DeepSeek ASR endpoint
+                byte[] wav = VoiceAudioRecorder.BuildWavBytes(new byte[3200], 16000, 16, 1);
+                AssertEqual(3244, wav.Length, "WAV header + 3200 PCM bytes must be 3244 bytes");
+                AssertTrue(Encoding.ASCII.GetString(wav, 0, 4) == "RIFF" && Encoding.ASCII.GetString(wav, 8, 4) == "WAVE", "WAV RIFF/WAVE header");
+
+                uint mods;
+                uint vk;
+                string norm;
+                AssertEqual(true, Win32Native.ParseHotkeyString("Ctrl+Alt+V", out mods, out vk, out norm), "Parse Ctrl+Alt+V");
+                AssertEqual("Ctrl+Alt+V", norm, "Normalized hotkey string");
+                AssertEqual(true, Win32Native.ParseHotkeyString("shift+f9", out mods, out vk, out norm), "Parse Shift+F9");
+                AssertEqual("Shift+F9", norm, "Normalized Shift+F9");
+                AssertEqual(false, Win32Native.ParseHotkeyString("Ctrl", out mods, out vk, out norm), "Bare modifier hotkey must fail");
+
+                bool isDs;
+                string asrUrl = AiSortService.NormalizeAsrEndpoint(new AppConfig(), out isDs);
+                AssertEqual(true, isDs, "Default preset must route to DeepSeek ASR");
+                AssertEqual("https://api.deepseek.com/v1/tools/asr", asrUrl, "DeepSeek ASR endpoint");
+
+                // 3b. Direct HTML timetable parser, week-spec parser & AI JSON section_times
+                int pSw, pEw;
+                string pWt;
+                List<int> pCw;
+                AssertEqual(true, CourseItem.TryParseWeekSpec("1-16周(单)", out pSw, out pEw, out pWt, out pCw), "Parse odd week spec");
+                AssertEqual("odd", pWt, "Odd week spec resolves to odd");
+                var oddProbe = new CourseItem { StartWeek = pSw, EndWeek = pEw, WeekType = pWt, CustomWeeks = pCw };
+                AssertEqual(true, oddProbe.OccursInWeek(1), "Odd spec occurs in week 1");
+                AssertEqual(false, oddProbe.OccursInWeek(2), "Odd spec skips week 2");
+
+                AssertEqual(true, CourseItem.TryParseWeekSpec("2-16(双)", out pSw, out pEw, out pWt, out pCw), "Parse even week spec");
+                AssertEqual("even", pWt, "Even week spec resolves to even");
+                var evenProbe = new CourseItem { StartWeek = pSw, EndWeek = pEw, WeekType = pWt, CustomWeeks = pCw };
+                AssertEqual(true, evenProbe.OccursInWeek(2), "Even spec occurs in week 2");
+                AssertEqual(false, evenProbe.OccursInWeek(3), "Even spec skips week 3");
+
+                AssertEqual(true, CourseItem.TryParseWeekSpec("1-4,8,10-11周", out pSw, out pEw, out pWt, out pCw), "Parse custom weeks");
+                AssertEqual(7, pCw.Count, "Custom weeks count=7");
+                AssertEqual(8, pCw[4], "Custom weeks includes week 8");
+
+                string sampleHtml =
+                    "<html><body><div>当前第12周</div><table>" +
+                    "<tr><th>节次</th><th>星期一</th><th>星期二</th><th>星期三</th><th>星期四</th><th>星期五</th></tr>" +
+                    "<tr><td>第1节<br>08:00-08:45</td><td rowspan=\"2\"></td><td rowspan=\"2\">编译原理<br>1-16周(单)<br>张教授<br>教一-102<hr>计算机网络<br>2-16周(双)<br>李老师<br>教二-205</td><td rowspan=\"2\"></td><td rowspan=\"2\"></td><td rowspan=\"2\"></td></tr>" +
+                    "<tr><td>第2节<br>08:55-09:40</td></tr>" +
+                    "<tr><td>第3节<br>10:00-10:45</td><td rowspan=\"2\"></td><td rowspan=\"2\"></td><td rowspan=\"2\"></td><td rowspan=\"2\">软件工程<br>1-16周<br>王老师<br>综合楼A301</td><td rowspan=\"2\"></td></tr>" +
+                    "<tr><td>第4节<br>10:55-11:40</td></tr>" +
+                    "</table></body></html>";
+                DirectTimetableParseResult htmlRes = TimetableService.ParseHtmlTimetable(sampleHtml, new DateTime(2026, 11, 26));
+                AssertEqual(true, htmlRes.Success, "Direct HTML timetable parse must succeed");
+                AssertEqual(3, htmlRes.Timetable.Courses.Count, "Direct HTML parse extracts 3 courses (odd/even split + Thu)");
+                AssertEqual("08:00", htmlRes.Timetable.GetSectionStartTime(1), "Section 1 start time from HTML");
+                AssertEqual("08:45", htmlRes.Timetable.GetSectionEndTime(1), "Section 1 end time from HTML");
+                AssertEqual("08:55", htmlRes.Timetable.GetSectionStartTime(2), "Section 2 start time from HTML");
+                AssertEqual("09:40", htmlRes.Timetable.GetSectionEndTime(2), "Section 2 end time from HTML");
+
+                bool foundTueOdd = false;
+                bool foundTueEven = false;
+                bool foundThu = false;
+                for (int i = 0; i < htmlRes.Timetable.Courses.Count; i++)
+                {
+                    CourseItem hc = htmlRes.Timetable.Courses[i];
+                    if (hc.Name.IndexOf("编译原理", StringComparison.Ordinal) >= 0)
+                    {
+                        foundTueOdd = (hc.DayOfWeek == 2 && hc.WeekType == "odd" && hc.StartSection == 1 && hc.EndSection == 2);
+                    }
+                    else if (hc.Name.IndexOf("计算机网络", StringComparison.Ordinal) >= 0)
+                    {
+                        foundTueEven = (hc.DayOfWeek == 2 && hc.WeekType == "even" && hc.StartSection == 1 && hc.EndSection == 2);
+                    }
+                    else if (hc.Name.IndexOf("软件工程", StringComparison.Ordinal) >= 0)
+                    {
+                        foundThu = (hc.DayOfWeek == 4 && hc.StartSection == 3 && hc.EndSection == 4);
+                    }
+                }
+                AssertEqual(true, foundTueOdd, "Tuesday odd course aligned to Day 2 Sec 1-2");
+                AssertEqual(true, foundTueEven, "Tuesday even course aligned to Day 2 Sec 1-2");
+                AssertEqual(true, foundThu, "Thursday course aligned to Day 4 Sec 3-4");
+
+                string aiTtJson = "{\"semester_name\":\"2026秋\",\"current_week\":12,\"section_times\":[{\"section\":1,\"start_time\":\"8:00\",\"end_time\":\"8:45\"}],\"courses\":[{\"name\":\"体育\",\"day_of_week\":4,\"start_section\":1,\"end_section\":1,\"start_week\":2,\"end_week\":16,\"week_type\":\"双周\"}]}";
+                AiTimetableExtractOutcome aiTt = AiSortService.ParseTimetableJson(aiTtJson);
+                AssertEqual(true, aiTt.Success, "AI timetable JSON parse");
+                AssertEqual("even", aiTt.Courses[0].WeekType, "Chinese week_type 双周 normalized to even");
+                AssertEqual("08:00", aiTt.Courses[0].StartTime, "AI timetable course start time backfilled from section_times");
+                AssertEqual(0, TimetableService.TryFindAliveDebugPort(Path.Combine(tempDir, "empty_mis_profile")), "Empty MIS profile returns 0 CDP port");
+
+                // 3c. Custom section count, single-week & global drag moves, single-week skip
+                var ttCustom = new TimetableData { SectionsPerDay = 8, ShowWeekends = false, RowMinHeight = 42 };
+                AssertEqual(8, ttCustom.GetMaxSectionCount(), "Custom SectionsPerDay=8 overrides default row count");
+                ttCustom.SectionsPerDay = 0;
+                AssertEqual(10, ttCustom.GetMaxSectionCount(), "Auto SectionsPerDay=0 fits default minimum 10");
+
+                var baseCourse = new CourseItem
+                {
+                    Name = "机器学习",
+                    DayOfWeek = 2,
+                    StartSection = 1,
+                    EndSection = 2,
+                    StartWeek = 1,
+                    EndWeek = 16,
+                    WeekType = "all"
+                };
+                ttCustom.Courses.Add(baseCourse);
+                ttCustom.MoveCourse(baseCourse, 4, 3, 12, true);
+                AssertEqual(0, ttCustom.GetCoursesForWeekAndDay(12, 2).Count, "Week 12 Tue slot cleared after single-week move");
+                List<CourseItem> w12Thu = ttCustom.GetCoursesForWeekAndDay(12, 4);
+                AssertEqual(1, w12Thu.Count, "Week 12 Thu receives single-week moved course");
+                AssertEqual(3, w12Thu[0].StartSection, "Single-week moved course starts at Sec 3");
+                AssertEqual(4, w12Thu[0].EndSection, "Single-week moved course preserves 2-section span");
+                AssertEqual(1, ttCustom.GetCoursesForWeekAndDay(13, 2).Count, "Week 13 Tue retains original course");
+                AssertEqual(0, ttCustom.GetCoursesForWeekAndDay(13, 4).Count, "Week 13 Thu does not inherit Week 12 move");
+
+                ttCustom.MoveCourse(baseCourse, 5, 5, 12, false);
+                AssertEqual(1, ttCustom.GetCoursesForWeekAndDay(13, 5).Count, "Global move updates all future weeks");
+                AssertEqual(5, ttCustom.GetCoursesForWeekAndDay(13, 5)[0].StartSection, "Global move targets Sec 5");
+
+                ttCustom.SkipCourseInWeek(baseCourse, 11);
+                AssertEqual(0, ttCustom.GetCoursesForWeekAndDay(11, 5).Count, "Skipped week hides course");
+                AssertEqual(1, ttCustom.GetCoursesForWeekAndDay(13, 5).Count, "Non-skipped week retains course");
+
+                // 3d. Anonymized 7-section MIS HTML (course codes, comma odd weeks, sibling div cells, [08:00-09:50] time axis)
+                string bjtuHtml =
+                    "<html><body><div class=\"widget-header\"><span class=\"widget-title\">" +
+                    "<button class=\"btn\">2026-2027-1 学期</button>" +
+                    "<ul><li><a>2026-2027-2 学期</a></li><li><a>2026-2027-1 学期</a></li></ul>" +
+                    "</span></div>" +
+                    "<table class=\"table table-bordered\">" +
+                    "<tr><th></th><th>星期一</th><th>星期二</th><th>星期三</th><th>星期四</th><th>星期五</th><th>星期六</th><th>星期日</th></tr>" +
+                    "<tr><td>第1节<br><span>[08:00-09:50]</span></td><td></td><td></td><td></td><td><div><!-- comment -->C108020B [02]<br><span>工科数学分析（A）I [本]</span><br><div>第01, 03, 05, 07, 09, 11, 13, 15周 <i>张老师</i></div><span>海淀东校区, 东区一教, DQ210</span></div></td><td></td><td></td><td></td></tr>" +
+                    "<tr><td>第2节<br><span>[10:10-12:00]</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>" +
+                    "<tr><td>第3节<br><span>[12:10-14:00]</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>" +
+                    "<tr><td>第4节<br><span>[14:10-16:00]</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>" +
+                    "<tr><td>第5节<br><span>[16:20-18:10]</span></td><td><div>A131008B [02]<br><span>职业生涯规划 [本]</span><br><div>第09-16周 <i>李老师</i></div><span>海淀东校区, DQ202</span></div><div style=\"margin-top:8px;\">A022014B [01]<br><span>大学生心理健康 [本]</span><br><div>第01-08周 <i>王老师</i></div><span>海淀东校区, DQ403</span></div></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>" +
+                    "<tr><td>第6节<br><span>[19:00-20:50]</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>" +
+                    "<tr><td>第7节<br><span>[21:00-21:50]</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>" +
+                    "</table></body></html>";
+                DirectTimetableParseResult bjtuRes = TimetableService.ParseHtmlTimetable(bjtuHtml, new DateTime(2026, 11, 27));
+                AssertEqual(true, bjtuRes.Success, "BJTU format HTML direct parse succeeds");
+                AssertEqual(7, bjtuRes.Timetable.SectionsPerDay, "BJTU 7-row schedule sets SectionsPerDay=7");
+                AssertEqual(7, bjtuRes.Timetable.SectionTimes.Count, "BJTU 7 section times captured");
+                AssertEqual("08:00", bjtuRes.Timetable.GetSectionStartTime(1), "BJTU Sec 1 start");
+                AssertEqual("09:50", bjtuRes.Timetable.GetSectionEndTime(1), "BJTU Sec 1 end");
+                AssertEqual("21:00", bjtuRes.Timetable.GetSectionStartTime(7), "BJTU Sec 7 start");
+                AssertEqual("21:50", bjtuRes.Timetable.GetSectionEndTime(7), "BJTU Sec 7 end");
+                AssertTrue(bjtuRes.Timetable.SemesterName.IndexOf("2026-2027-1", StringComparison.Ordinal) >= 0, "Selected semester button preferred over dropdown: " + bjtuRes.Timetable.SemesterName);
+                AssertEqual(3, bjtuRes.Timetable.Courses.Count, "BJTU splits sibling divs and captures all 3 courses");
+                CourseItem bjtuOdd = bjtuRes.Timetable.Courses.Find(delegate(CourseItem x) { return x.DayOfWeek == 4 && x.StartSection == 1; });
+                AssertTrue(bjtuOdd != null, "BJTU Thursday Sec 1 course exists");
+                AssertEqual("工科数学分析（A）I", bjtuOdd.Name, "Course code line and [本] stripped from name");
+                AssertEqual("odd", bjtuOdd.WeekType, "Comma-listed odd weeks recognized as odd");
+                AssertEqual("张老师", bjtuOdd.Teacher, "Teacher extracted cleanly");
+
+                // 3e. Live CDP JSON payload round-trip (verifies ArrayList/IList deserialization never returns 0 courses)
+                var cdpSer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                var cdpCells = new List<Dictionary<string, object>>();
+                string[] dayHeaders = new string[] { "", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日" };
+                for (int cIdx = 0; cIdx < dayHeaders.Length; cIdx++)
+                {
+                    cdpCells.Add(new Dictionary<string, object> { { "r", 0 }, { "c", cIdx }, { "rs", 1 }, { "cs", 1 }, { "text", dayHeaders[cIdx] }, { "blocks", new string[0] } });
+                }
+                for (int rIdx = 1; rIdx <= 7; rIdx++)
+                {
+                    string[] slotLabels = new string[] { "第1节\n[08:00-09:50]", "第2节\n[10:10-12:00]", "第3节\n[12:10-14:00]", "第4节\n[14:10-16:00]", "第5节\n[16:20-18:10]", "第6节\n[19:00-20:50]", "第7节\n[21:00-21:50]" };
+                    cdpCells.Add(new Dictionary<string, object> { { "r", rIdx }, { "c", 0 }, { "rs", 1 }, { "cs", 1 }, { "text", slotLabels[rIdx - 1] }, { "blocks", new string[0] } });
+                    if (rIdx == 1)
+                    {
+                        string cellTxt = "C108020B [02]\n工科数学分析（A）I [本]\n第01, 03, 05, 07, 09, 11, 13, 15周 张老师\n海淀东校区, 东区一教, DQ210";
+                        cdpCells.Add(new Dictionary<string, object> { { "r", rIdx }, { "c", 4 }, { "rs", 1 }, { "cs", 1 }, { "text", cellTxt }, { "blocks", new string[] { cellTxt } } });
+                    }
+                }
+                var cdpPayload = new Dictionary<string, object>
+                {
+                    { "hints", new string[] { "2026-2027-1 学期" } },
+                    { "tables", new object[] { new Dictionary<string, object> { { "rows", 8 }, { "cols", 8 }, { "wdHits", 7 }, { "nonEmpty", 16 }, { "cells", cdpCells } } } }
+                };
+                var roundTripInfo = cdpSer.Deserialize<Dictionary<string, object>>(cdpSer.Serialize(cdpPayload));
+                System.Collections.IList rtTables = roundTripInfo["tables"] as System.Collections.IList;
+                AssertTrue(rtTables != null && rtTables.Count == 1, "JavaScriptSerializer nested array casts to IList");
+                var liveCap = new MisPageCapture
+                {
+                    Success = true,
+                    StructuredTablesJson = cdpSer.Serialize(rtTables),
+                    SelectedHints = new List<string> { "2026-2027-1 学期" }
+                };
+                DirectTimetableParseResult liveRes = TimetableService.ParseCapturedTimetable(liveCap, new DateTime(2026, 11, 27));
+                AssertEqual(true, liveRes.Success, "Live CDP StructuredTablesJson parses directly");
+                AssertEqual(7, liveRes.Timetable.SectionsPerDay, "Live CDP sets SectionsPerDay=7");
+                AssertEqual(1, liveRes.Timetable.Courses.Count, "Live CDP yields 1 course");
+                AssertEqual("工科数学分析（A）I", liveRes.Timetable.Courses[0].Name, "Live CDP extracts course name");
+                AssertEqual("odd", liveRes.Timetable.Courses[0].WeekType, "Live CDP keeps odd week type");
+
+                // 3f. Timetable drag edge auto-scroll math
+                double scrollDown = DashboardWindow.ComputeEdgeAutoScrollDelta(390.0, 400.0, 20.0, 180.0);
+                AssertTrue(scrollDown > 0.0, "Cursor near bottom edge must produce positive scroll delta: " + scrollDown);
+                double scrollUp = DashboardWindow.ComputeEdgeAutoScrollDelta(10.0, 400.0, 50.0, 180.0);
+                AssertTrue(scrollUp < 0.0, "Cursor near top edge must produce negative scroll delta: " + scrollUp);
+                double scrollMid = DashboardWindow.ComputeEdgeAutoScrollDelta(200.0, 400.0, 50.0, 180.0);
+                AssertEqual(0.0, scrollMid, "Cursor in center viewport must not auto-scroll");
+                double scrollBottomBound = DashboardWindow.ComputeEdgeAutoScrollDelta(395.0, 400.0, 180.0, 180.0);
+                AssertEqual(0.0, scrollBottomBound, "Already at bottom bound returns 0");
+
+                tt.SectionsPerDay = 11;
+                tt.ShowWeekends = false;
+                tt.RowMinHeight = 64;
+                tt.Courses[0].ExcludedWeeks.Add(15);
+
+                // 4. Storage round-trip & WPF UI smoke for MIS + Timetable Sticky + Voice Overlay
+                var storage = new StorageService(tempDir);
+                var controller = new TrayAndAppController(storage);
+                controller.Config.MisEnabled = true;
+                controller.Data.Timetable = tt;
+                storage.SaveData(controller.Data);
+                AppData reloaded = storage.LoadData();
+                AssertEqual(2, reloaded.Timetable.Courses.Count, "Timetable courses survive JSON roundtrip");
+                AssertEqual(11, reloaded.Timetable.SectionsPerDay, "SectionsPerDay survives roundtrip");
+                AssertEqual(false, reloaded.Timetable.ShowWeekends, "ShowWeekends survives roundtrip");
+                AssertEqual(64, reloaded.Timetable.RowMinHeight, "RowMinHeight survives roundtrip");
+                AssertEqual(true, reloaded.Timetable.Courses[0].ExcludedWeeks.Contains(15), "ExcludedWeeks survives roundtrip");
+
+                var dash = new DashboardWindow(controller);
+                dash.UpdateMisTabVisibility();
+                dash.ApplyThemeAndRefreshAll();
+
+                var ttNote = new StickyNote { Title = "课程表", FilterMode = "timetable" };
+                var stickyWin = new StickyNoteWindow(ttNote, controller);
+                stickyWin.ApplyThemeAndContent();
+
+                var misDlg = new MisImportDialog(controller);
+                var overlay = new VoiceMemoOverlayWindow("claude_warm");
+                overlay.SetRecordingHint("Ctrl+Alt+V", true);
+                overlay.UpdateAudioLevel(0.65);
+                overlay.SetProcessingState("正在转文字…", "test");
+
+                overlay.Close();
+                misDlg.Close();
+                stickyWin.Close();
                 dash.Close();
             }
             finally
