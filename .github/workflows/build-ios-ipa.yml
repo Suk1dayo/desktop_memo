@@ -1,0 +1,70 @@
+name: Build iOS Unsigned IPA (SwiftUI)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios_swiftui/**'
+      - '.github/workflows/build-ios-ipa.yml'
+
+jobs:
+  build-ios:
+    name: Build Unsigned .ipa on macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode & Swift version
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: |
+          cd ios_swiftui
+          xcodegen generate
+
+      - name: Build unsigned Release app (iphoneos)
+        run: |
+          xcodebuild \
+            -project ios_swiftui/DesktopMemo.xcodeproj \
+            -scheme DesktopMemo \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package unsigned .ipa
+        run: |
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/DesktopMemo.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: DesktopMemo.app not found at $APP_PATH"
+            exit 1
+          fi
+          rm -rf build/ipa DesktopMemo-iOS-unsigned.ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          rm -rf build/ipa/Payload/DesktopMemo.app/_CodeSignature
+          (cd build/ipa && zip -qry ../../DesktopMemo-iOS-unsigned.ipa Payload)
+          ls -lh DesktopMemo-iOS-unsigned.ipa
+          shasum -a 256 DesktopMemo-iOS-unsigned.ipa
+
+      - name: Upload unsigned .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopMemo-iOS-unsigned-ipa
+          path: DesktopMemo-iOS-unsigned.ipa
+          retention-days: 30

@@ -26,3 +26,19 @@ Thumbs.db
 desktop.ini
 *.lnk
 *.log
+
+# v3.0 云端服务运行期数据、依赖与二进制安装包
+server_v3/data/
+server_v3/site_profile.json
+server_v3/node_modules/
+server_v3/releases/*.exe
+server_v3/releases/*.apk
+server_v3/releases/*.ipa
+server_v3/releases/*.zip
+DesktopMemo_Server_V3_Deploy.zip
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/.eas/
+ios_swiftui/*.xcodeproj/
+ios_swiftui/build/
